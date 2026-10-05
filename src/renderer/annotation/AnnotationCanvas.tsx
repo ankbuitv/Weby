@@ -58,7 +58,6 @@ export const AnnotationCanvas: React.FC<Props> = ({
   const futureRef = useRef<AnnotationStroke[][]>([]);
   const liveRef = useRef<LiveInkState | null>(null);
   const laserTrailRef = useRef<{ x: number; y: number; t: number }[]>([]);
-  const [, setTick] = useState(0);
   const [textPlace, setTextPlace] = useState<{ x: number; y: number } | null>(null);
   const [textValue, setTextValue] = useState('');
   const textInputRef = useRef<HTMLTextAreaElement>(null);
@@ -314,7 +313,6 @@ export const AnnotationCanvas: React.FC<Props> = ({
       ctx.restore();
     }
 
-    setTick((n) => (n + 1) % 1_000_000);
   }, []);
 
   useEffect(() => {
@@ -378,6 +376,8 @@ export const AnnotationCanvas: React.FC<Props> = ({
       effColor = '#000';
       effSize = Math.max(24, sizeRef.current * 4);
       effOpacity = 1;
+      // Snapshot before modifying strokes so Undo restores erased ink.
+      pushHistory();
       eraseAt(pt, effSize);
     }
     if (t === 'laser') {
@@ -469,8 +469,6 @@ export const AnnotationCanvas: React.FC<Props> = ({
       return;
     }
     if (live.tool === 'eraser') {
-      // commit as a history entry (snapshot)
-      pushHistory();
       notifyHistory();
       redraw();
       return;
@@ -539,7 +537,7 @@ export const AnnotationCanvas: React.FC<Props> = ({
           position: 'absolute',
           left: 0,
           top: 0,
-          pointerEvents: interactive && tool !== 'cursor' ? 'auto' : 'none',
+          pointerEvents: interactive && (tool !== 'cursor' || spotlightActive) ? 'auto' : 'none',
           touchAction: 'none',
         }}
         onPointerDown={onPointerDown}

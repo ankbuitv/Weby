@@ -24,11 +24,21 @@ const api = {
 
   getURL: () => ipcRenderer.invoke('web:get:url') as Promise<string>,
   getTitle: () => ipcRenderer.invoke('web:get:title') as Promise<string>,
+  getLoadError: () => ipcRenderer.invoke('web:get:error') as Promise<{ errorCode: number; errorDescription: string; validatedURL: string } | null>,
   canGoBack: () => ipcRenderer.invoke('web:can:go:back') as Promise<boolean>,
   canGoForward: () => ipcRenderer.invoke('web:can:go:forward') as Promise<boolean>,
 
   setViewport: (bounds: { x: number; y: number; width: number; height: number }) =>
     ipcRenderer.invoke('viewport:set', bounds),
+  setMouseRegions: (regions: Array<{ x: number; y: number; width: number; height: number }>) =>
+    ipcRenderer.invoke('overlay:regions', regions),
+  setOverlayCapture: (capture: boolean) => ipcRenderer.invoke('overlay:capture', capture),
+  focusWebView: () => ipcRenderer.invoke('web:focus'),
+  onRelayKey: (cb: (key: { key: string; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }) => void) => {
+    const listener = (_e: unknown, key: { key: string; ctrlKey: boolean; shiftKey: boolean; altKey: boolean }) => cb(key);
+    ipcRenderer.on('stage:relay-key', listener);
+    return () => ipcRenderer.removeListener('stage:relay-key', listener);
+  },
 
   captureFreeze: () =>
     ipcRenderer.invoke(IPC.CAPTURE_FREEZE) as Promise<

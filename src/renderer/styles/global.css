@@ -7,7 +7,7 @@ html, body, #root {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #0b0d12;
+  background: transparent;
   color: #e6e6e6;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   user-select: none;
@@ -24,3 +24,71 @@ button {
 input, textarea {
   font-family: inherit;
 }
+
+.floating-toolbar {
+  position: absolute;
+  z-index: 30;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 9px 7px;
+  width: 56px;
+  border-radius: 18px;
+  color: #f5f7fa;
+  background: rgba(20, 23, 31, .91);
+  border: 1px solid rgba(255,255,255,.09);
+  box-shadow: 0 16px 48px rgba(0,0,0,.34), inset 0 1px 0 rgba(255,255,255,.04);
+  -webkit-backdrop-filter: blur(22px);
+  backdrop-filter: blur(22px);
+}
+.tool-button {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  color: #aeb5c4;
+  background: transparent;
+  cursor: pointer;
+  transition: color .14s ease, background .14s ease, transform .14s ease;
+}
+.tool-button:hover:not(:disabled) { color: #fff; background: rgba(255,255,255,.08); transform: scale(1.04); }
+.tool-button:disabled { opacity: .35; cursor: default; }
+.tool-button.active { color: #aeb6ff; background: rgba(108,124,255,.20); border-color: rgba(126,140,255,.14); }
+.toolbar-separator { width: 27px; height: 1px; margin: 4px 0; background: rgba(255,255,255,.12); }
+.tool-popover {
+  position: absolute;
+  left: 66px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 226px;
+  padding: 14px;
+  border-radius: 16px;
+  color: #f5f7fa;
+  background: rgba(20,23,31,.96);
+  border: 1px solid rgba(255,255,255,.1);
+  box-shadow: 0 18px 54px rgba(0,0,0,.42);
+  -webkit-backdrop-filter: blur(24px);
+  backdrop-filter: blur(24px);
+}
+.popover-title { font-size: 12px; font-weight: 650; color: #c5cada; margin-bottom: 11px; letter-spacing: .04em; }
+.color-options { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 13px; }
+.color-options button, .color-options input { width: 21px; height: 21px; border-radius: 50%; border: 2px solid rgba(255,255,255,.22); cursor: pointer; padding: 0; overflow: hidden; }
+.color-options button.selected { outline: 2px solid #aab3ff; outline-offset: 2px; }
+.size-control { display: flex; align-items: center; gap: 8px; font-size: 11px; color: #aeb5c4; }
+.size-control input { flex: 1; min-width: 50px; accent-color: #7d89ff; }
+.size-control b { min-width: 32px; text-align: right; font-size: 11px; font-weight: 500; color: #e2e5ed; }
+.shape-options { display: flex; gap: 7px; }
+.shape-options button { flex: 1; height: 36px; border: 1px solid rgba(255,255,255,.1); border-radius: 9px; color: #d5daea; background: rgba(255,255,255,.05); font-size: 20px; cursor: pointer; }
+.shape-options button.selected { color: #adb5ff; border-color: rgba(124,139,255,.5); background: rgba(108,124,255,.16); }
+.popover-close { margin-top: 12px; border: 0; background: transparent; color: #8e98ff; font: inherit; font-size: 12px; padding: 3px 0; cursor: pointer; }
+
+/* Native web contents is visible through the transparent presentation overlay. */
+html, body, #root { background: transparent !important; }
+button { outline-color: #8792ff; }

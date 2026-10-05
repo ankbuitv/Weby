@@ -14,6 +14,7 @@ const fileURL = (p: string) => {
 
 const App: React.FC = () => {
   const [settings, setSettings] = useState<Settings>({ ...DEFAULT_SETTINGS });
+  const [backgroundNaturalSize, setBackgroundNaturalSize] = useState<{ width: number; height: number } | null>(null);
   const [mode, setMode] = useState<PresentationMode>('live');
   const [cleanMode, setCleanMode] = useState(false);
   const [spotlight, setSpotlight] = useState(false);
@@ -25,7 +26,6 @@ const App: React.FC = () => {
   const [color, setColor] = useState<string>(DEFAULT_SETTINGS.defaultPenColor);
   const [size, setSize] = useState<number>(DEFAULT_SETTINGS.defaultPenSize);
   const [opacity, setOpacity] = useState<number>(1);
-  const [toolbarCollapsed, setToolbarCollapsed] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [pageTitle, setPageTitle] = useState('');
   const [pageURL, setPageURL] = useState('');
@@ -61,7 +61,47 @@ const App: React.FC = () => {
     });
     window.stage.getURL().then(setPageURL);
     window.stage.getTitle().then(setPageTitle);
+    window.stage.getLoadError().then((info) => { if (info) setLoadError(`${info.errorDescription} · ${info.validatedURL}`); });
   }, []);
+
+  useEffect(() => {
+    if (!settings.backgroundImage) { setBackgroundNaturalSize(null); return; }
+    const image = new Image();
+    image.onload = () => setBackgroundNaturalSize({ width: image.naturalWidth, height: image.naturalHeight });
+    image.onerror = () => setBackgroundNaturalSize(null);
+    image.src = fileURL(settings.backgroundImage);
+  }, [settings.backgroundImage]);
+
+  // Keyboard shortcuts must continue to work while the native website view has focus.
+  useEffect(() => {
+    const unsubscribe = window.stage.onRelayKey((key) => {
+      window.dispatchEvent(new KeyboardEvent('keydown', {
+        key: key.key, ctrlKey: key.ctrlKey, shiftKey: key.shiftKey, altKey: key.altKey,
+        bubbles: true, cancelable: true,
+      }));
+    });
+    return () => { unsubscribe(); };
+  }, []);
+
+  // The transparent overlay passes pointer input through to the website in Cursor
+  // mode, except for measured UI hit zones. Drawing/privacy modes capture the surface.
+  useEffect(() => {
+    window.stage.setOverlayCapture(tool !== 'cursor' || spotlight || mode !== 'live' || paletteOpen || settingsOpen).catch(() => {});
+  }, [tool, spotlight, mode, paletteOpen, settingsOpen]);
+
+  useEffect(() => {
+    const syncRegions = () => {
+      const regions = Array.from(document.querySelectorAll<HTMLElement>('[data-ui-region]'))
+        .filter((el) => el.offsetParent !== null)
+        .map((el) => { const r = el.getBoundingClientRect(); return { x: r.left, y: r.top, width: r.width, height: r.height }; });
+      window.stage.setMouseRegions(regions).catch(() => {});
+    };
+    syncRegions();
+    const timer = window.setInterval(syncRegions, 300);
+    const observer = new MutationObserver(syncRegions);
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+    return () => { window.clearInterval(timer); observer.disconnect(); };
+  }, [tool, cleanMode, paletteOpen, settingsOpen]);
 
   // Compute viewport bounds based on window size and ratio. Relay to main.
   useEffect(() => {
@@ -109,13 +149,13 @@ const App: React.FC = () => {
       }
       const x = (w - vw) / 2;
       const y = (h - vh) / 2;
-      const bounds = { x, y, width: vw, height: vh };
+      // One rounded CSS-pixel calculation feeds both Chromium and the overlay canvas.
+      const bounds = { x: Math.round(x), y: Math.round(y), width: Math.round(vw), height: Math.round(vh) };
       setViewportRect(bounds);
-      // layout wrapper div (for annotation overlay positioning)
-      wrap.style.left = x + 'px';
-      wrap.style.top = y + 'px';
-      wrap.style.width = vw + 'px';
-      wrap.style.height = vh + 'px';
+      wrap.style.left = bounds.x + 'px';
+      wrap.style.top = bounds.y + 'px';
+      wrap.style.width = bounds.width + 'px';
+      wrap.style.height = bounds.height + 'px';
       // relay to main so WebContentsView matches
       window.stage.setViewport(bounds).catch(() => {});
     };
@@ -138,7 +178,7 @@ const App: React.FC = () => {
   }, []);
 
   const navigate = useCallback((url: string) => {
-    window.stage.navigate(url).catch(() => {});
+    window.stage.navigate(url).then((ok) => { if (ok) setTimeout(() => window.stage.focusWebView().catch(() => {}), 80); }).catch(() => {});
   }, []);
 
   const togglePrivacy = useCallback(() => {
@@ -315,44 +355,51 @@ const App: React.FC = () => {
   // When tool changes to non-cursor and spotlight is on, keep spotlight behavior (dim overlay)
   const interactiveAnnotations = tool !== 'cursor' || spotlight;
 
-  // Title bar drag area (frameless window)
-  const onDragAreaMouseDown = (e: React.MouseEvent) => {
-    // Only enable drag on empty area
-    if (cleanMode) return;
-    if (e.target !== e.currentTarget) return;
-    // Send to main via IPC to drag? Electron supports -webkit-app-region CSS on body;
-    // but we set it via a drag region div. We need to be careful to avoid blocking clicks on toolbar.
-  };
-
-  // Background style
-  const bgStyle: React.CSSProperties = {
-    position: 'absolute',
-    inset: 0,
-    backgroundColor: settings.backgroundColor,
-    zIndex: 0,
-  };
-  const bgImgStyle: React.CSSProperties | undefined = settings.backgroundImage
-    ? {
-        position: 'absolute',
-        inset: 0,
-        backgroundImage: `url("${fileURL(settings.backgroundImage).replace(/"/g, '%22')}")`,
-        backgroundSize:
-          settings.backgroundMode === 'cover'
-            ? 'cover'
-            : settings.backgroundMode === 'contain'
-              ? 'contain'
-              : 'auto',
-        backgroundPosition: 'center',
-        backgroundRepeat: 'no-repeat',
-        zIndex: 0,
-      }
-    : undefined;
-  const dimStyle: React.CSSProperties = {
-    position: 'absolute',
-    inset: 0,
-    background: `rgba(0,0,0,${settings.backgroundDim})`,
-    zIndex: 1,
-    pointerEvents: 'none',
+  // Draw the backdrop in four regions around the native website view. The center
+  // stays transparent so Chromium is visible through the separate overlay window.
+  const rootWidth = rootRef.current?.clientWidth || window.innerWidth;
+  const rootHeight = rootRef.current?.clientHeight || window.innerHeight;
+  const vr = viewportRect || { x: 0, y: 0, width: rootWidth, height: rootHeight };
+  const backdropImage = settings.backgroundImage
+    ? `url("${fileURL(settings.backgroundImage).replace(/"/g, '%22')}")`
+    : 'radial-gradient(ellipse at 72% 12%, rgba(101,111,210,0.16), transparent 44%), linear-gradient(145deg, #10131c, #090b10 68%)';
+  const backdropPanels = viewportRect ? [
+    { x: 0, y: 0, width: rootWidth, height: vr.y },
+    { x: 0, y: vr.y, width: vr.x, height: vr.height },
+    { x: vr.x + vr.width, y: vr.y, width: rootWidth - vr.x - vr.width, height: vr.height },
+    { x: 0, y: vr.y + vr.height, width: rootWidth, height: rootHeight - vr.y - vr.height },
+  ] : [{ x: 0, y: 0, width: rootWidth, height: rootHeight }];
+  let imageWidth = rootWidth;
+  let imageHeight = rootHeight;
+  let imageOffsetX = 0;
+  let imageOffsetY = 0;
+  if (backgroundNaturalSize && settings.backgroundImage) {
+    const scale = settings.backgroundMode === 'cover'
+      ? Math.max(rootWidth / backgroundNaturalSize.width, rootHeight / backgroundNaturalSize.height)
+      : settings.backgroundMode === 'contain'
+        ? Math.min(rootWidth / backgroundNaturalSize.width, rootHeight / backgroundNaturalSize.height)
+        : 1;
+    imageWidth = backgroundNaturalSize.width * scale;
+    imageHeight = backgroundNaturalSize.height * scale;
+    imageOffsetX = (rootWidth - imageWidth) / 2;
+    imageOffsetY = (rootHeight - imageHeight) / 2;
+  }
+  const panelStyle = (r: { x: number; y: number; width: number; height: number }): React.CSSProperties => {
+    const firstSize = `${rootWidth}px ${rootHeight}px`;
+    const imageSize = `${imageWidth}px ${imageHeight}px`;
+    const backgroundSize = settings.backgroundDim > 0
+      ? `${firstSize}, ${settings.backgroundImage ? imageSize : firstSize}, ${firstSize}`
+      : `${settings.backgroundImage ? imageSize : firstSize}, ${firstSize}`;
+    const imagePosition = `${imageOffsetX - r.x}px ${imageOffsetY - r.y}px`;
+    const backgroundPosition = settings.backgroundDim > 0
+      ? `-${r.x}px -${r.y}px, ${settings.backgroundImage ? imagePosition : `-${r.x}px -${r.y}px`}, -${r.x}px -${r.y}px`
+      : `${settings.backgroundImage ? imagePosition : `-${r.x}px -${r.y}px`}, -${r.x}px -${r.y}px`;
+    return {
+      position: 'absolute', left: r.x, top: r.y, width: r.width, height: r.height,
+      backgroundColor: settings.backgroundColor,
+      backgroundImage: `${settings.backgroundDim > 0 ? `linear-gradient(rgba(0,0,0,${settings.backgroundDim}),rgba(0,0,0,${settings.backgroundDim})),` : ''}${backdropImage}`,
+      backgroundSize, backgroundPosition, backgroundRepeat: 'no-repeat', pointerEvents: 'none', zIndex: 0,
+    };
   };
 
   const showWebsite = mode === 'live' || mode === 'frozen';
@@ -360,58 +407,26 @@ const App: React.FC = () => {
   return (
     <div
       ref={rootRef}
-      style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden', background: settings.backgroundColor }}
+      style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden', background: 'transparent' }}
     >
-      <div style={bgStyle} />
-      {bgImgStyle && <div style={bgImgStyle} onError={() => {}} />}
-      <div style={dimStyle} />
-
-      {/* Frameless drag area top strip */}
-      {!cleanMode && (
-        <div
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          right: 0,
-          height: 32,
-          zIndex: 9,
-          WebkitAppRegion: 'drag',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: '0 12px',
-          color: 'rgba(255,255,255,0.5)',
-          fontSize: 12,
-        } as React.CSSProperties}
-      >
-          <div style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}>
-            Stage Browser{pageTitle ? ' · ' + pageTitle : ''}
-          </div>
-          <div style={{ WebkitAppRegion: 'no-drag', display: 'flex', gap: 4 } as React.CSSProperties}>
-            <WindowBtn label="—" onClick={() => window.stage.minimize()} />
-            <WindowBtn label="▢" onClick={() => window.stage.toggleMaximize()} />
-            <WindowBtn label="×" onClick={() => window.stage.close()} />
-          </div>
-        </div>
-      )}
+      {backdropPanels.map((r, i) => r.width > 0 && r.height > 0 && <div key={i} style={panelStyle(r)} />)}
 
       {/* Toolbar */}
       <Toolbar
         visible={!cleanMode}
-        tool={tool}
-        setTool={setTool}
+        tool={spotlight ? 'spotlight' : tool}
+        setTool={(next) => { if (next === 'spotlight') { setSpotlight((v) => !v); setTool('cursor'); } else { if (next === 'highlighter' && tool !== 'highlighter') { setColor(settings.defaultHighlighterColor); setOpacity(settings.defaultHighlighterOpacity); } if (next === 'pen' && tool !== 'pen') { setColor(settings.defaultPenColor); setOpacity(1); } setTool(next); if (next === 'cursor') setSpotlight(false); } }}
         color={color}
         onColorChosen={setColor}
         size={size}
         onSizeChange={setSize}
+        opacity={opacity}
+        onOpacityChange={setOpacity}
         onUndo={() => annotApiRef.current?.undo()}
         onRedo={() => annotApiRef.current?.redo()}
-        onClear={() => annotApiRef.current?.clear()}
         canUndo={histState.canUndo}
         canRedo={histState.canRedo}
-        collapsed={toolbarCollapsed}
-        onToggleCollapsed={() => setToolbarCollapsed((c) => !c)}
+        onToggleCollapsed={() => setSettingsOpen(true)}
       />
 
       {/* Website wrapper (positioned by effect) */}
@@ -426,15 +441,14 @@ const App: React.FC = () => {
           borderRadius: cleanMode ? 0 : 14,
           overflow: 'hidden',
           boxShadow: cleanMode ? 'none' : '0 20px 60px rgba(0,0,0,0.5)',
-          background: '#ffffff',
+          background: 'transparent',
           zIndex: 2,
         }}
-        onMouseDown={onDragAreaMouseDown}
       >
-        {/* Website is a real WebContentsView layered BELOW the renderer; so this div acts as the hole where it shows through.
-            The annotation canvas and overlays sit in this wrapper above it. */}
+        {/* Transparent overlay content; native WebContentsView beneath is exposed through the clear center. */}
         {loadError && (
           <div
+            data-ui-region="true"
             style={{
               position: 'absolute',
               inset: 0,
@@ -449,8 +463,8 @@ const App: React.FC = () => {
               pointerEvents: 'auto',
             }}
           >
-            <div style={{ fontSize: 18 }}>Unable to load page</div>
-            <div style={{ color: 'rgba(255,255,255,0.6)', fontSize: 13 }}>{loadError}</div>
+            <div style={{ fontSize: 18, fontWeight: 600 }}>Couldn’t load this page</div>
+            <div style={{ color: 'rgba(255,255,255,0.6)', fontSize: 13 }}>Check your connection, then try again.</div>
             <button
               onClick={() => window.stage.reload()}
               style={{
@@ -483,8 +497,7 @@ const App: React.FC = () => {
               gap: 8,
             }}
           >
-            <div style={{ fontSize: 42, fontWeight: 600, letterSpacing: 2 }}>BRB</div>
-            <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.5)' }}>Privacy mode · Press F8 to return</div>
+            <div style={{ fontSize: 20, fontWeight: 550, letterSpacing: '-.01em' }}>Presentation paused</div>
           </div>
         )}
         {mode === 'frozen' && frozenImage && (
@@ -514,25 +527,6 @@ const App: React.FC = () => {
         )}
       </div>
 
-      {/* Status/help line bottom */}
-      {!cleanMode && (
-        <div
-          style={{
-            position: 'absolute',
-            left: 0,
-            right: 0,
-            bottom: 8,
-            textAlign: 'center',
-            color: 'rgba(255,255,255,0.35)',
-            fontSize: 11,
-            zIndex: 9,
-            pointerEvents: 'none',
-          }}
-        >
-          Ctrl+L navigate · Alt+←/→ back/forward · V/P/H/E/L tools · F8 privacy · F9 freeze · F10 spotlight · Ctrl+Shift+B background · Ctrl+Shift+H clean mode · F11 fullscreen · Ctrl+Shift+Q quit
-        </div>
-      )}
-
       <Palette
         open={paletteOpen}
         initialValue={paletteInitial}
@@ -550,46 +544,9 @@ const App: React.FC = () => {
         onClearBackground={clearBackground}
       />
 
-      {/* subtle cursor hint */}
-      {tool !== 'cursor' && !cleanMode && (
-        <div
-          style={{
-            position: 'absolute',
-            top: 40,
-            left: '50%',
-            transform: 'translateX(-50%)',
-            padding: '6px 12px',
-            background: 'rgba(0,0,0,0.5)',
-            color: '#fff',
-            borderRadius: 8,
-            fontSize: 12,
-            zIndex: 20,
-            pointerEvents: 'none',
-          }}
-        >
-          {tool.toUpperCase()} mode · press V for cursor
-        </div>
-      )}
+
     </div>
   );
 };
-
-const WindowBtn: React.FC<{ label: string; onClick: () => void }> = ({ label, onClick }) => (
-  <button
-    onClick={onClick}
-    style={{
-      width: 32,
-      height: 24,
-      background: 'transparent',
-      border: 'none',
-      color: 'rgba(255,255,255,0.7)',
-      borderRadius: 4,
-      cursor: 'pointer',
-      fontSize: 12,
-    }}
-  >
-    {label}
-  </button>
-);
 
 export default App;

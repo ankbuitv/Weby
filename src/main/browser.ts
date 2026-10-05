@@ -3,11 +3,9 @@ import {
   BrowserWindow,
   WebContentsView,
   session,
-  shell,
   ipcMain,
-  nativeImage,
   dialog,
-  WebContents,
+  screen,
 } from 'electron';
 import * as path from 'path';
 import { IPC } from '../shared/ipc';
@@ -18,6 +16,12 @@ const DEV_URL = 'http://localhost:5173/index.html';
 
 export class StageBrowser {
   private mainWindow!: BrowserWindow;
+  private uiWindow!: BrowserWindow;
+  private mousePoll: NodeJS.Timeout | null = null;
+  private mouseRegions: Array<{ x: number; y: number; width: number; height: number }> = [];
+  private capturePointer = false;
+  private pointerIgnored = true;
+  private lastLoadError: { errorCode: number; errorDescription: string; validatedURL: string } | null = null;
   private webView!: WebContentsView;
   private settings!: Settings;
   private audioMuted = false;
@@ -29,7 +33,7 @@ export class StageBrowser {
     await app.whenReady();
 
     // Secure default session
-    const ses = session.defaultSession;
+    const ses = session.fromPartition('persist:stage');
     ses.setPermissionRequestHandler((_wc, _permission, callback) => {
       // Deny dangerous permissions by default; allow safe/mediacapable on request with minimal granting
       callback(false);
@@ -38,16 +42,22 @@ export class StageBrowser {
 
     this.createMainWindow();
     this.createWebView();
+    this.createOverlayWindow();
     this.registerIPC();
     this.registerWebHandlers();
     this.attachWindowHandlers();
     this.layout();
 
+    // The host window's renderer is intentionally an inert, dark backing surface.
+    // The real site is a native WebContentsView above it; React runs in a separate
+    // transparent overlay window so its canvas can compose above Chromium.
+    await this.mainWindow.loadURL('data:text/html,<html><body style="margin:0;background:%230b0d12"></body></html>');
     if (app.isPackaged) {
-      await this.mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+      await this.uiWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
     } else {
-      await this.mainWindow.loadURL(DEV_URL);
+      await this.uiWindow.loadURL(DEV_URL);
     }
+    this.startPointerRouting();
   }
 
   private createMainWindow() {
@@ -63,6 +73,34 @@ export class StageBrowser {
       title: 'Stage Browser',
       show: false,
       webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        backgroundThrottling: false,
+      },
+    });
+    this.mainWindow.once('ready-to-show', () => this.mainWindow.show());
+    this.mainWindow.on('enter-full-screen', () => {
+      this.uiWindow?.webContents.send(IPC.FULLSCREEN_CHANGED, true);
+    });
+    this.mainWindow.on('leave-full-screen', () => {
+      this.uiWindow?.webContents.send(IPC.FULLSCREEN_CHANGED, false);
+    });
+  }
+
+  private createOverlayWindow() {
+    const bounds = this.mainWindow.getBounds();
+    this.uiWindow = new BrowserWindow({
+      ...bounds,
+      parent: this.mainWindow,
+      frame: false,
+      transparent: true,
+      backgroundColor: '#00000000',
+      hasShadow: false,
+      resizable: false,
+      skipTaskbar: true,
+      show: false,
+      webPreferences: {
         preload: path.join(__dirname, '../preload/index.js'),
         contextIsolation: true,
         nodeIntegration: false,
@@ -70,13 +108,34 @@ export class StageBrowser {
         backgroundThrottling: false,
       },
     });
-    this.mainWindow.once('ready-to-show', () => this.mainWindow.show());
-    this.mainWindow.on('enter-full-screen', () => {
-      this.mainWindow.webContents.send(IPC.FULLSCREEN_CHANGED, true);
+    this.uiWindow.setIgnoreMouseEvents(true, { forward: true });
+    this.uiWindow.once('ready-to-show', () => {
+      if (!this.mainWindow.isVisible()) this.mainWindow.show();
+      this.uiWindow.show();
     });
-    this.mainWindow.on('leave-full-screen', () => {
-      this.mainWindow.webContents.send(IPC.FULLSCREEN_CHANGED, false);
+    this.uiWindow.on('closed', () => {
+      if (this.mousePoll) clearInterval(this.mousePoll);
+      this.mousePoll = null;
     });
+  }
+
+  private startPointerRouting() {
+    // Transparent top-level overlay passes all non-UI pointer input through to the
+    // live site. Drawing mode captures the full surface; toolbar/popover hit zones
+    // are selectively interactive while Cursor is active.
+    this.mousePoll = setInterval(() => {
+      if (!this.uiWindow || this.uiWindow.isDestroyed() || !this.mainWindow.isVisible()) return;
+      const p = screen.getCursorScreenPoint();
+      const b = this.uiWindow.getBounds();
+      const x = p.x - b.x;
+      const y = p.y - b.y;
+      const inControl = this.mouseRegions.some((r) => x >= r.x && y >= r.y && x <= r.x + r.width && y <= r.y + r.height);
+      const shouldIgnore = !this.capturePointer && !inControl;
+      if (shouldIgnore !== this.pointerIgnored) {
+        this.pointerIgnored = shouldIgnore;
+        this.uiWindow.setIgnoreMouseEvents(shouldIgnore, { forward: true });
+      }
+    }, 12);
   }
 
   private createWebView() {
@@ -92,56 +151,42 @@ export class StageBrowser {
       },
     });
     this.mainWindow.contentView.addChildView(this.webView);
-    // Reorder: put our WebContentsView BEHIND the main window's native WebContentsView
-    // so React UI (toolbar, palette, annotations) renders above the website.
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const cv = this.mainWindow.contentView as unknown as {
-        children: unknown[];
-        removeChildView: (v: unknown) => void;
-        addChildViewAtIndex: (v: unknown, i: number) => void;
-      };
-      // remove and re-add at index 0
-      cv.removeChildView(this.webView);
-      cv.addChildViewAtIndex(this.webView, 0);
-    } catch {
-      // Electron version may not expose index API; fall through
-    }
+    // Electron 31: addChildView places the native page above the host renderer.
+    // Never move it to index 0: that hid the site behind the opaque React DOM.
     this.webView.setBackgroundColor('#ffffff');
 
     const wc = this.webView.webContents;
     wc.setWindowOpenHandler(({ url }) => {
-      // Open http/https in same view; defer external to shell after asking
+      // Keep ordinary links in this stage view; deny custom operating-system protocols.
       if (url.startsWith('http://') || url.startsWith('https://')) {
         wc.loadURL(url).catch(() => {});
-      } else {
-        // do not auto-execute custom protocols
-        shell.openExternal(url).catch(() => {});
       }
+      // Never hand untrusted custom protocols to the operating system.
       return { action: 'deny' };
     });
 
     wc.on('did-navigate', (_e, url) => {
-      this.mainWindow.webContents.send(IPC.LOAD_COMMIT, { url, isMainFrame: true });
+      this.lastLoadError = null;
+      this.uiWindow?.webContents.send(IPC.LOAD_COMMIT, { url, isMainFrame: true });
     });
     wc.on('did-navigate-in-page', (_e, url, isMainFrame) => {
-      if (isMainFrame) this.mainWindow.webContents.send(IPC.LOAD_COMMIT, { url, isMainFrame });
+      if (isMainFrame) this.uiWindow?.webContents.send(IPC.LOAD_COMMIT, { url, isMainFrame });
     });
     wc.on('page-title-updated', (_e, title) => {
-      this.mainWindow.webContents.send(IPC.TITLE_UPDATED, title);
+      this.uiWindow?.webContents.send(IPC.TITLE_UPDATED, title);
     });
     wc.on('did-fail-load', (_e, errorCode, errorDescription, validatedURL, isMainFrame) => {
-      if (isMainFrame) {
-        this.mainWindow.webContents.send(IPC.DID_FAIL_LOAD, { errorCode, errorDescription, validatedURL });
+      if (isMainFrame && errorCode !== -3) {
+        this.lastLoadError = { errorCode, errorDescription, validatedURL };
+        this.uiWindow?.webContents.send(IPC.DID_FAIL_LOAD, this.lastLoadError);
       }
     });
     wc.on('render-process-gone', (_e, details) => {
-      this.mainWindow.webContents.send(IPC.RENDERER_CRASHED, { reason: details.reason });
+      this.uiWindow?.webContents.send(IPC.RENDERER_CRASHED, { reason: details.reason });
     });
     wc.on('will-navigate', (e, url) => {
-      if (!(url.startsWith('http://') || url.startsWith('https://') || url.startsWith('file://') || url.startsWith('about:'))) {
+      if (!(url.startsWith('http://') || url.startsWith('https://') || url === 'about:blank')) {
         e.preventDefault();
-        shell.openExternal(url).catch(() => {});
       }
     });
 
@@ -151,6 +196,7 @@ export class StageBrowser {
     const existingUA = wc.userAgent;
     const productUA = existingUA.replace(/Electron\/\S+\s*/, '');
     wc.setUserAgent(productUA);
+    wc.loadURL('https://www.google.com').catch(() => {});
 
     // Download handling - use default save dialog
     wc.session.on('will-download', (_event, item) => {
@@ -164,6 +210,7 @@ export class StageBrowser {
     this.mainWindow.on('maximize', relayout);
     this.mainWindow.on('unmaximize', relayout);
     this.mainWindow.on('restore', relayout);
+    this.mainWindow.on('move', relayout);
   }
 
   // Layout is driven by renderer via IPC to match its CSS viewport.
@@ -176,7 +223,8 @@ export class StageBrowser {
   }
 
   private layout() {
-    // WebContentsView fills content by default; renderer will overlay with exact bounds.
+    if (!this.mainWindow || this.mainWindow.isDestroyed()) return;
+    if (this.uiWindow && !this.uiWindow.isDestroyed()) this.uiWindow.setBounds(this.mainWindow.getBounds());
     const { width, height } = this.mainWindow.getContentBounds();
     if (this.viewport) {
       this.webView.setBounds({
@@ -192,15 +240,34 @@ export class StageBrowser {
 
   private registerWebHandlers() {
     this.webView.webContents.on('before-input-event', (event, input) => {
-      // Relay certain shortcuts? Shortcut handling is in renderer globally; this is for kill-switch if needed
-      if (input.key === 'F11' && input.type === 'keyDown') {
-        event.preventDefault();
-        this.mainWindow.setFullScreen(!this.mainWindow.isFullScreen());
-      }
+      if (input.type !== 'keyDown') return;
+      const key = input.key.toLowerCase();
+      const ctrl = input.control || input.meta;
+      const routed =
+        (ctrl && (key === 'l' || key === 'q' || key === 'r' || key === 'z' || key === '0' || key === '-' || key === '=' || key === '+' || (input.shift && ['q', 'h', 'b', 'c', 'z', 'r'].includes(key)))) ||
+        (input.alt && (input.key === 'ArrowLeft' || input.key === 'ArrowRight')) ||
+        ['F8', 'F9', 'F10', 'F11', 'Escape'].includes(input.key);
+      if (!routed) return;
+      event.preventDefault();
+      this.uiWindow?.webContents.send('stage:relay-key', {
+        key: input.key,
+        ctrlKey: !!ctrl,
+        shiftKey: !!input.shift,
+        altKey: !!input.alt,
+      });
+      if (ctrl && key === 'l') this.uiWindow?.focus();
     });
   }
 
   private registerIPC() {
+    ipcMain.handle('overlay:regions', (_e, regions) => {
+      if (!Array.isArray(regions)) return;
+      this.mouseRegions = regions.filter((r: any) => [r?.x, r?.y, r?.width, r?.height].every(Number.isFinite));
+    });
+    ipcMain.handle('overlay:capture', (_e, capture: boolean) => {
+      this.capturePointer = !!capture;
+    });
+    ipcMain.handle('web:focus', () => this.webView.webContents.focus());
     ipcMain.handle(IPC.NAVIGATE, (_e, url: string) => {
       try {
         const u = new URL(url);
@@ -258,6 +325,7 @@ export class StageBrowser {
 
     ipcMain.handle('web:get:url', () => this.webView.webContents.getURL());
     ipcMain.handle('web:get:title', () => this.webView.webContents.getTitle());
+    ipcMain.handle('web:get:error', () => this.lastLoadError);
     ipcMain.handle('web:can:go:back', () => this.webView.webContents.canGoBack());
     ipcMain.handle('web:can:go:forward', () => this.webView.webContents.canGoForward());
 
