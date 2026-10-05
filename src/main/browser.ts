@@ -59,6 +59,7 @@ export class StageBrowser {
       frame: false,
       transparent: false,
       backgroundColor: '#0b0d12',
+      thickFrame: true,
       title: 'Stage Browser',
       show: false,
       webPreferences: {
@@ -91,6 +92,21 @@ export class StageBrowser {
       },
     });
     this.mainWindow.contentView.addChildView(this.webView);
+    // Reorder: put our WebContentsView BEHIND the main window's native WebContentsView
+    // so React UI (toolbar, palette, annotations) renders above the website.
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const cv = this.mainWindow.contentView as unknown as {
+        children: unknown[];
+        removeChildView: (v: unknown) => void;
+        addChildViewAtIndex: (v: unknown, i: number) => void;
+      };
+      // remove and re-add at index 0
+      cv.removeChildView(this.webView);
+      cv.addChildViewAtIndex(this.webView, 0);
+    } catch {
+      // Electron version may not expose index API; fall through
+    }
     this.webView.setBackgroundColor('#ffffff');
 
     const wc = this.webView.webContents;
