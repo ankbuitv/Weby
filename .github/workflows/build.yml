@@ -1,0 +1,49 @@
+name: Build Stage Browser Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - '**'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Package Windows x64
+        run: npm run dist
+
+      - name: List release output
+        if: always()
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path release -Recurse -File | Select-Object FullName, Length
+          Get-ChildItem -Path release -Recurse -Filter *.exe | Select-Object FullName, Length
+
+      - name: Upload Windows EXEs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: StageBrowser-Windows
+          path: |
+            release/**/*.exe
+          if-no-files-found: error
