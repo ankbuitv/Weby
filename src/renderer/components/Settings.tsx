@@ -32,6 +32,7 @@ export const SettingsPanel: React.FC<Props> = ({
   return (
     <div
       data-settings="true"
+      data-ui-region="true"
       style={{
         position: 'absolute',
         inset: 0,

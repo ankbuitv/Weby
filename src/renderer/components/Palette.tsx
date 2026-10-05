@@ -44,6 +44,7 @@ export const Palette: React.FC<Props> = ({ open, initialValue, onClose, onNaviga
   return (
     <div
       data-palette="true"
+      data-ui-region="true"
       style={{
         position: 'absolute',
         inset: 0,
