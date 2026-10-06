@@ -1,0 +1,82 @@
+name: Build Juzt for Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - '**'
+
+jobs:
+  verify:
+    name: Typecheck and tests
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+  build-windows:
+    name: Package Juzt for Windows x64
+    runs-on: windows-latest
+    needs: verify
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Generate the app icon
+        run: npm run icons
+
+      - name: Build (main + renderers)
+        run: npm run build
+
+      # No GH_TOKEN, no publishing: artifacts are uploaded to the run only.
+      - name: Package Windows x64 (nsis + portable + unpacked)
+        run: npx electron-builder --win --x64 --publish never
+
+      - name: List release output
+        if: always()
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path release -Recurse -File | Select-Object FullName, Length
+          Get-ChildItem -Path release -Recurse -Filter *.exe | Select-Object FullName, Length
+
+      - name: Upload the EXEs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Juzt-Windows
+          path: |
+            release/**/*.exe
+          if-no-files-found: error
+
+      - name: Upload the unpacked app (for OBS / quick checks)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Juzt-Windows-unpacked
+          path: |
+            release/win-unpacked/**
+          if-no-files-found: warn
