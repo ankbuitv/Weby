@@ -72,6 +72,29 @@ export class BoardStore {
     return doc;
   }
 
+  /**
+   * Make sure a document exists under an *already chosen* id.
+   *
+   * A whiteboard tab is created with its board id up front (the tab record is
+   * the handle the UI holds), so opening `+ → New Whiteboard` or Ctrl+Shift+N
+   * must materialise that exact document — otherwise every stroke lands in a
+   * board the store has never heard of and the lesson is silently lost.
+   */
+  ensure(id: string, name?: string): WhiteboardDoc {
+    const existing = this.get(id);
+    if (existing) {
+      if (name && existing.name !== name) return this.rename(id, name) ?? existing;
+      return existing;
+    }
+    const theme = (this.index.length ? this.index[0].theme : 'dark') as WhiteboardThemeId;
+    const doc: WhiteboardDoc = { ...createDoc(name || 'Whiteboard', theme), id };
+    this.docs.set(doc.id, doc);
+    this.flushIndex();
+    this.events.onDoc(doc);
+    this.events.onList(this.index);
+    return doc;
+  }
+
   rename(id: string, name: string): WhiteboardDoc | null {
     const doc = this.get(id);
     if (!doc) return null;

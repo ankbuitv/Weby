@@ -48,6 +48,8 @@ export const CH = {
   /* present / live */
   LIVE_PRESENT_TAB: 'live:presentTab',
   LIVE_PRESENT_BOARD: 'live:presentBoard',
+  /** Switch to dual output and open Juzt Live (explicit "Start Presentation"). */
+  LIVE_START: 'live:start',
   LIVE_STOP: 'live:stop',
   LIVE_SET_PRIVACY: 'live:setPrivacy',
   LIVE_SET_FREEZE: 'live:setFreeze',
@@ -121,6 +123,21 @@ export const CH = {
   FILE_OPEN_IMAGE: 'file:openImage',
   FILE_SAVE_IMAGE_DATA: 'file:saveImageData',
   FILE_OPEN_MEDIA: 'file:openMedia',
+  /* website compatibility + extensions (PREP only, never LIVE) */
+  COMPAT_INFO: 'compat:info',
+  COMPAT_SET_SITE: 'compat:setSite',
+  COMPAT_RESET_SITE: 'compat:resetSite',
+  COMPAT_CLEAR_SITE_DATA: 'compat:clearSiteData',
+  EXT_LIST: 'ext:list',
+  EXT_ADD: 'ext:add',
+  EXT_PICK: 'ext:pick',
+  EXT_ENABLE: 'ext:enable',
+  EXT_DISABLE: 'ext:disable',
+  EXT_RELOAD: 'ext:reload',
+  EXT_REMOVE: 'ext:remove',
+  EXT_DISABLE_ALL: 'ext:disableAll',
+  EXT_OPEN_OPTIONS: 'ext:openOptions',
+  SAFE_MODE_SET: 'app:safeMode',
 } as const;
 
 /* main → renderer events */

@@ -138,6 +138,8 @@ const prepApi = {
   present: {
     tab: (id: string) => invoke<LivePayload>(CH.LIVE_PRESENT_TAB, id),
     board: (id: string) => invoke<LivePayload>(CH.LIVE_PRESENT_BOARD, id),
+    /** Switch to dual output, open Juzt Live and present the active tab. */
+    start: () => invoke<LivePayload>(CH.LIVE_START),
     stop: () => invoke<LivePayload>(CH.LIVE_STOP),
     setPrivacy: (on: boolean) => invoke<LivePayload>(CH.LIVE_SET_PRIVACY, on),
     setFreeze: (on: boolean) => invoke<LivePayload>(CH.LIVE_SET_FREEZE, on),
@@ -149,6 +151,59 @@ const prepApi = {
     preview: (enabled: boolean) => invoke<boolean>(CH.LIVE_PREVIEW, enabled),
     /** Navigate the audience page while it is presented (dual mode). */
     navigateAudience: (url: string) => invoke<boolean>(CH.LIVE_NAVIGATE, url),
+  },
+
+  /* ------------------------------------------------------------------ *
+   * Website compatibility + extensions.
+   * PREP only: the LIVE renderer never gets these on its API object, so
+   * audience output cannot see engine details or touch extensions.
+   * ------------------------------------------------------------------ */
+  compat: {
+    info: () =>
+      invoke<{
+        app: string;
+        electron: string;
+        chromium: string;
+        v8: string;
+        node: string;
+        userAgent: string;
+        loadedExtensions: number;
+        approvedExtensions: number;
+        safeMode: boolean;
+        unsupported: { id: string; label: string; proprietary?: boolean; note?: string }[];
+      }>(CH.COMPAT_INFO),
+    setSite: (origin: string, mode: 'clean' | 'app' | 'electron') => invoke<boolean>(CH.COMPAT_SET_SITE, origin, mode),
+    resetSite: (origin: string) => invoke<boolean>(CH.COMPAT_RESET_SITE, origin),
+    clearSiteData: (origin: string) => invoke<{ ok: boolean; error?: string }>(CH.COMPAT_CLEAR_SITE_DATA, origin),
+  },
+
+  extensions: {
+    list: () =>
+      invoke<
+        {
+          id: string;
+          path: string;
+          name: string;
+          version: string;
+          manifestVersion: number;
+          description?: string;
+          enabled: boolean;
+          status: 'loaded' | 'disabled' | 'failed' | 'unknown';
+          error?: string;
+          addedAt: number;
+        }[]
+      >(CH.EXT_LIST),
+    /** Pick a folder with a native dialog. */
+    pick: () => invoke<{ error: string } | { id: string; name: string; version: string; manifestVersion: number }>(CH.EXT_PICK),
+    add: (dir: string) => invoke<{ error: string } | { id: string; name: string; version: string; manifestVersion: number }>(CH.EXT_ADD, dir),
+    enable: (id: string) => invoke<boolean>(CH.EXT_ENABLE, id),
+    disable: (id: string) => invoke<boolean>(CH.EXT_DISABLE, id),
+    reload: (id: string) => invoke<boolean>(CH.EXT_RELOAD, id),
+    remove: (id: string) => invoke<boolean>(CH.EXT_REMOVE, id),
+    /** Loaded instances are dropped; the approved list is kept. */
+    disableAll: () => invoke<unknown[]>(CH.EXT_DISABLE_ALL),
+    openOptions: (id: string) => invoke<{ ok: boolean; error?: string }>(CH.EXT_OPEN_OPTIONS, id),
+    setSafeMode: (on: boolean) => invoke<boolean>(CH.SAFE_MODE_SET, on),
   },
 
   scenes: {

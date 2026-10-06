@@ -20,6 +20,29 @@ test('a bare domain becomes http, not a search', () => {
   assert.equal(resolveInput('localhost:5173'), 'http://localhost:5173');
 });
 
+test('the exact addresses a teacher types during a lesson', () => {
+  // Regression: these were reported as "That address cannot be opened safely".
+  const hosts = ['google.com', 'www.google.com', 'https://google.com', 'https://www.google.com', 'example.com', 'https://example.com'];
+  for (const host of hosts) {
+    const out = resolveInput(host, { search: true });
+    assert.ok(out, `${host} must resolve to something navigable`);
+    assert.match(out, /^https?:\/\//, host);
+    assert.ok(!out.includes('duckduckgo'), `${host} is an address, not a search`);
+  }
+  assert.equal(resolveInput('google.com'), 'http://google.com');
+  assert.equal(resolveInput('https://google.com'), 'https://google.com/');
+  assert.equal(resolveInput('example.com'), 'http://example.com');
+  assert.equal(resolveInput('https://example.com'), 'https://example.com/');
+});
+
+test('a search query is never mistaken for an address', () => {
+  for (const q of ['Newton laws', 'ôn tập vật lý', 'how to teach fractions', 'vật lý 10 bài 1']) {
+    const out = resolveInput(q);
+    assert.ok(out.startsWith('https://duckduckgo.com/?q='), `${q} should search`);
+    assert.equal(resolveInput(q, { search: false }), null);
+  }
+});
+
 test('free text falls through to the search engine', () => {
   const out = resolveInput('how to teach fractions');
   assert.ok(out.startsWith('https://duckduckgo.com/?q='), out);

@@ -16,7 +16,8 @@ import {
 import fs from 'node:fs';
 import path from 'node:path';
 import { CH, EV } from '../shared/ipc';
-import { computeGeometry, isCardRadius, SIZE_PRESETS } from '../shared/layout';
+import { computeGeometry, isCardRadius, SIZE_PRESETS, shelfVisible as shelfOn } from '../shared/layout';
+import { resolveAudience, resolveWorkspace, overlayNeeded } from '../shared/workspace';
 import type {
   BackgroundSpec,
   CameraConfig,
@@ -39,6 +40,9 @@ import type {
   WhiteboardMeta,
 } from '../shared/types';
 import { APP_NAME, DEFAULT_CAMERA_CONFIG, DEFAULT_CARD, DEFAULT_SETTINGS, SCHEMA_VERSION, isBoardTab, tabLabel } from '../shared/types';
+import { buildWebUserAgent, clientHints, unsupportedFeatures, type UserAgentMode } from '../shared/engine';
+import { ExtensionManager } from './extensions';
+import type { ExtensionRecord } from '../shared/types';
 import { INTERNAL_PAGES, isInternalPage, resolveInput, sameResource } from '../shared/url';
 import { BoardStore } from './boards';
 import { countBounds, registerDiagnosticsIpc, setDiagnostics, snapshot, webContentsCount } from './diagnostics';
@@ -101,6 +105,7 @@ export class JuztApp {
   private live!: LiveStage;
   private permissions!: PermissionBroker;
   private appSession: Session | null = null;
+  private extensions: ExtensionManager | null = null;
   private ui: PrepUiState = { tool: 'cursor', inkLayer: false, cover: false, number: 1 };
   private sceneCounter = 0;
   private focusRestoreAt = 0;
@@ -122,6 +127,7 @@ export class JuztApp {
       onVisited: (entry) => this.recordVisit(entry.url, entry.title),
       onViewsChanged: () => this.routeViews(),
       onToast: (message, tone) => this.toast(message, tone),
+      onBoardNeeded: (boardId, name) => this.boards.ensure(boardId, name),
     });
     this.permissions = new PermissionBroker({
       sendRequest: (request) => this.sendPrep(EV.PERM_REQUEST, request),
@@ -129,6 +135,16 @@ export class JuztApp {
       toast: (message, tone) => this.toast(message, tone),
     });
     this.permissions.attach(this.appSession);
+
+    // Extensions share the website session so their storage and content
+    // scripts work. Juzt's own pages and preload live in the default session,
+    // so extension code can never reach the privileged IPC bridge.
+    this.extensions = new ExtensionManager(SESSION_PARTITION);
+    await this.extensions.restore(this.settings.extensions, {
+      // Safe Mode keeps the *configuration* but loads nothing.
+      extensionsEnabled: !this.settings.safeMode,
+    });
+    this.settings.extensions = this.extensions.persist();
 
     this.live = new LiveStage({
       surfaceWebContents: () => this.audienceWebContents(),
@@ -175,6 +191,22 @@ export class JuztApp {
 
     // First run: session restore may hold private tabs; keep them.
     void this.sendBootstrapWhenReady();
+  }
+
+  /**
+   * Start Presentation — the only way the dual (Juzt Live + Juzt Prep) layout
+   * comes into existence. Single window stays the default and never spawns a
+   * second surface, so the two compositions can never be stacked by accident.
+   */
+  async startPresentation(): Promise<LivePayload> {
+    if (this.settings.presentationMode !== 'dual') {
+      await this.setSettings({ presentationMode: 'dual' });
+    } else {
+      this.openLiveWindow();
+    }
+    this.windows.liveWindow()?.focus();
+    await this.presentActive();
+    return this.toPayload();
   }
 
   private async sendBootstrapWhenReady(): Promise<void> {
@@ -224,9 +256,9 @@ export class JuztApp {
 
   private createSession(): Session {
     const s = session.fromPartition(SESSION_PARTITION);
-    // Identify honestly, and drop the Electron token that breaks a few sites.
-    const ua = s.getUserAgent().replace(/\sElectron\/[\d.]+/, '');
-    s.setUserAgent(ua);
+    // Identify honestly: the *real* Chromium build with no application token.
+    // Compatibility comes from Chromium 152 being current, not from pretending.
+    this.applyWebIdentity(s);
     s.setPermissionCheckHandler(() => false);
     s.setSpellCheckerEnabled(false);
     s.on('will-download', (event, item) => {
@@ -239,6 +271,124 @@ export class JuztApp {
       void event;
     });
     return s;
+  }
+
+  /**
+   * Website identity: an engine-accurate, Chrome-compatible User-Agent plus
+   * matching `Sec-CH-UA` client hints.
+   *
+   * Both are rewritten in the network stack (`webRequest`), never by injecting
+   * JavaScript into pages: no monkey-patching of `navigator`, no fragile global
+   * shims, and no way for the two values to contradict each other. The
+   * advertised Chrome/Chromium version is always the version actually bundled.
+   *
+   * Exactly ONE handler is registered for the lifetime of the session. It picks
+   * the mode per request from the live settings, so changing the identity or a
+   * per-site override costs nothing and leaks no listener.
+   */
+  private applyWebIdentity(s: Session): void {
+    const versions = process.versions;
+    const base = {
+      chromium: versions.chrome,
+      electron: versions.electron,
+      app: APP_NAME,
+      version: app.getVersion(),
+      platform: process.platform,
+      arch: process.arch,
+    };
+
+    // One UA/hint pair per mode, built once: the request path stays allocation
+    // free apart from the header object itself.
+    const cache = new Map<UserAgentMode, { ua: string; hints: Record<string, string> }>();
+    const forMode = (mode: UserAgentMode) => {
+      let entry = cache.get(mode);
+      if (!entry) {
+        entry = { ua: buildWebUserAgent({ ...base, mode }), hints: clientHints(base.chromium, base.platform, mode) };
+        cache.set(mode, entry);
+      }
+      return entry;
+    };
+
+    const modeFor = (url: string): UserAgentMode => {
+      if (this.settings.safeMode) return 'clean';
+      try {
+        const origin = `${new URL(url).protocol}//${new URL(url).host}`;
+        const override = this.settings.siteCompat[origin];
+        if (override) return override;
+      } catch {
+        /* not a parseable URL — fall through to the global setting */
+      }
+      return this.settings.webUserAgent;
+    };
+
+    // The session default covers anything the filter does not match.
+    const global = forMode(this.settings.safeMode ? 'clean' : this.settings.webUserAgent);
+    s.setUserAgent(global.ua);
+
+    s.webRequest.onBeforeSendHeaders({ urls: ['https://*/*', 'http://*/*'] }, (details, callback) => {
+      const { ua, hints } = forMode(modeFor(details.url));
+      const headers: Record<string, string> = { ...details.requestHeaders };
+      for (const [key, value] of Object.entries(hints)) headers[key] = value;
+      // Never leak a stale application token from the default headers.
+      delete headers['User-Agent'];
+      headers['User-Agent'] = ua;
+      callback({ requestHeaders: headers });
+    });
+  }
+
+  /**
+   * Re-apply the identity after a settings change.
+   *
+   * Only the session default and the settings are refreshed — the request
+   * handler reads them live, so there is nothing to re-register.
+   */
+  private refreshWebIdentity(): void {
+    if (!this.appSession) return;
+    const ua = this.appSession.getUserAgent();
+    const mode = this.settings.safeMode ? 'clean' : this.settings.webUserAgent;
+    this.appSession.setUserAgent(
+      buildWebUserAgent({
+        chromium: process.versions.chrome,
+        electron: process.versions.electron,
+        app: APP_NAME,
+        version: app.getVersion(),
+        platform: process.platform,
+        arch: process.arch,
+        mode,
+      }),
+    );
+    void ua;
+  }
+
+  /**
+   * Private, PREP-only engine report. Never sent to LIVE: it goes through
+   * `sendPrep` only, and LIVE has no handler for `compat:info`.
+   */
+  private compatibilityInfo(): {
+    app: string;
+    electron: string;
+    chromium: string;
+    v8: string;
+    node: string;
+    userAgent: string;
+    loadedExtensions: number;
+    approvedExtensions: number;
+    safeMode: boolean;
+    unsupported: ReturnType<typeof unsupportedFeatures>;
+  } {
+    const v = process.versions;
+    return {
+      app: APP_NAME,
+      electron: v.electron,
+      chromium: v.chrome,
+      v8: v.v8,
+      node: v.node,
+      userAgent: this.appSession?.getUserAgent() ?? '',
+      loadedExtensions: this.extensions?.loaded().length ?? 0,
+      approvedExtensions: this.extensions?.list().length ?? 0,
+      safeMode: this.settings.safeMode,
+      unsupported: unsupportedFeatures(v.chrome),
+    };
   }
 
   /* ------------------------------------------------------------------ *
@@ -388,6 +538,11 @@ export class JuztApp {
    * Geometry + routing
    * ------------------------------------------------------------------ */
 
+  /** True when the compact tab shelf occupies the strip above the card. */
+  private shelfVisible(): boolean {
+    return shelfOn(this.tabs.tabs.length, !!this.settings.tabShelfAlways);
+  }
+
   private geometry() {
     const prepSize = this.windows.prepContentSize();
     const liveSize = this.windows.liveBounds();
@@ -401,31 +556,45 @@ export class JuztApp {
       layout: this.settings.layout,
       card: this.settings.card,
       paneOpen: this.settings.prepPaneOpen,
+      shelfVisible: this.shelfVisible(),
     });
   }
 
-  /** Place every native view. Called on resize/mode/tab/present changes only. */
+  /**
+   * Place every native view. Called on resize/mode/tab/present changes only.
+   *
+   * Single mode (the V2 default) is a strict one-surface contract: the active
+   * tab's view is the only native content, at the one card rect the renderer
+   * draws its frame around. No holding screen, no audience layer, no stacking.
+   */
   routeViews(): void {
     if (!this.windows.prep) return;
     const geo = this.geometry();
     const single = this.settings.presentationMode === 'single';
     const live = this.live.state;
     const active = this.tabs.active();
-    const presentedTabId = this.presentedTabId();
-    const cover = single && (this.ui.cover || live.flags.privacy || live.presentation.kind === 'holding');
-    const audienceVisible = !live.flags.privacy && !cover;
+
+    const workspace = resolveWorkspace({
+      mode: this.settings.presentationMode,
+      active,
+      privacy: live.flags.privacy,
+      frozen: live.flags.frozen,
+      presentation: live.presentation.kind,
+    });
 
     for (const { tab, view } of this.tabs.webTabs()) {
       if (!view) continue;
       let rect: Rect | null = null;
       let visible = false;
       if (single) {
-        const isCardTab = presentedTabId ? tab.id === presentedTabId : tab.id === active?.id;
-        const isPaneTab = !!geo.pane && tab.id === active?.id && tab.id !== presentedTabId;
-        if (isCardTab && audienceVisible) {
+        // Exactly one web surface: the active tab, and only while the workspace
+        // really is a website (never over a New Tab or a whiteboard card).
+        const onCard = workspace.kind === 'web' && tab.id === active?.id;
+        const onPane = !!geo.pane && tab.id === active?.id && workspace.kind !== 'web';
+        if (onCard && workspace.overlay !== 'privacy') {
           rect = geo.live;
           visible = true;
-        } else if (isPaneTab && geo.pane) {
+        } else if (onPane && geo.pane) {
           rect = { ...geo.pane, y: geo.pane.y + 34, height: Math.max(120, geo.pane.height - 34) };
           visible = true;
         }
@@ -439,12 +608,21 @@ export class JuztApp {
     if (!single) {
       const stage = this.windows.stageWindowView();
       if (stage) {
-        const presentingWeb = live.presentation.kind === 'tab' && !this.presentedIsPrivate();
+        // The audience page is a *separate* instance on the shared session; it
+        // is only ever the visible content of the LIVE window.
+        const audience = resolveAudience({
+          mode: this.settings.presentationMode,
+          active,
+          privacy: live.flags.privacy,
+          frozen: live.flags.frozen,
+          presentation: live.presentation.kind,
+        });
+        const presentingWeb = audience === 'web' && !this.presentedIsPrivate();
         this.windows.register({
           view: stage,
           role: 'live',
           rect: geo.live,
-          visible: presentingWeb && !live.flags.privacy && live.presentation.kind !== 'holding',
+          visible: presentingWeb,
         });
       }
       const surface = this.windows.surface();
@@ -462,16 +640,24 @@ export class JuztApp {
 
     const overlay = this.windows.ensureCardOverlay();
     const rect = single ? geo.live : geo.overlay;
-    // The overlay is the only place the camera preview, masks and spotlight can
-    // be drawn over a native page — so it stays up whenever any of them is on,
-    // and it lets clicks through unless the teacher is actually drawing.
-    // Electron 31 exposes no click-through for a single view (`setIgnoreMouseEvents`
-    // is a window API), so the overlay must not sit idle above the page: it is only
-    // mapped when it has to capture the pointer, and hidden the rest of the time so
-    // the website keeps its normal mouse behaviour. Everything else the teacher sees
-    // (camera preview, effects) is mirrored in the always-available Camera panel.
-    const showOverlay = !!this.ui.inkLayer || this.ui.tool !== 'cursor' || !!this.ui.cameraDrag || this.live.effectsVisible();
-    const visible = !cover && !!rect && showOverlay;
+    // The overlay is the only layer that can paint above the native page (ink,
+    // masks, spotlight, camera, and in single mode the privacy/freeze screens).
+    // Electron 31 exposes no per-view click-through (`setIgnoreMouseEvents` is a
+    // window API), so the overlay is *only* mapped when it has to capture the
+    // pointer or has something to draw; the rest of the time it is hidden and the
+    // website keeps its normal mouse behaviour, untouched.
+    const showOverlay = overlayNeeded({
+      mode: this.settings.presentationMode,
+      active,
+      privacy: live.flags.privacy,
+      frozen: live.flags.frozen,
+      presentation: live.presentation.kind,
+      drawing: this.ui.tool !== 'cursor',
+      committedInk: !!this.ui.inkLayer,
+      cameraDrag: !!this.ui.cameraDrag,
+      effects: this.live.effectsVisible(),
+    });
+    const visible = !!rect && showOverlay;
     this.windows.register({ view: overlay, role: 'prep', rect: visible ? rect : null, visible, transparent: true });
 
     this.windows.applyPlacements();
@@ -481,6 +667,8 @@ export class JuztApp {
       windowSize: this.windows.prepContentSize(),
       card: geo.live,
       overlay: single ? geo.live : geo.overlay,
+      insets: geo.insets,
+      shelf: this.shelfVisible(),
     };
     this.sendOverlay(EV.GEOM, geometryMsg);
     this.sendPrep(EV.GEOM, geometryMsg);
@@ -884,6 +1072,135 @@ export class JuztApp {
     /* ---- present / live ---- */
     registerPrep(CH.LIVE_PRESENT_TAB, (_e, id: unknown) => this.presentTab(asString(id)));
     registerPrep(CH.LIVE_PRESENT_BOARD, (_e, id: unknown) => this.presentBoard(asString(id)));
+    registerPrep(CH.LIVE_START, () => this.startPresentation());
+
+    /* ---- website compatibility (private teacher diagnostics only) ---- */
+    registerPrep(CH.COMPAT_INFO, () => this.compatibilityInfo());
+    registerPrep(CH.COMPAT_SET_SITE, (_e, origin: unknown, mode: unknown) => {
+      const key = asOrigin(origin);
+      const m = mode === 'app' || mode === 'electron' ? mode : 'clean';
+      if (!key) return false;
+      this.settings.siteCompat = { ...this.settings.siteCompat, [key]: m };
+      this.refreshWebIdentity();
+      return true;
+    });
+    registerPrep(CH.COMPAT_RESET_SITE, (_e, origin: unknown) => {
+      const key = asOrigin(origin);
+      if (!key) return false;
+      const next = { ...this.settings.siteCompat };
+      delete next[key];
+      this.settings.siteCompat = next;
+      this.refreshWebIdentity();
+      return true;
+    });
+    registerPrep(CH.COMPAT_CLEAR_SITE_DATA, async (_e, origin: unknown) => {
+      const key = asOrigin(origin);
+      if (!key || !this.appSession) return { ok: false, error: 'Unknown origin.' };
+      try {
+        await this.appSession.clearStorageData({ origin: `https://${key}` });
+        await this.appSession.clearCache();
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, error: String(e) };
+      }
+    });
+
+    /* ---- extensions ---- */
+    registerPrep(CH.EXT_LIST, () => this.extensions?.list() ?? []);
+    registerPrep(CH.EXT_PICK, async (e) => {
+      const win = BrowserWindow.fromWebContents(e.sender) ?? this.windows.prepWindow();
+      const manager = this.extensions;
+      if (!manager || !win) return { error: 'Extension manager unavailable.' };
+      const dir = await manager.pickDirectory(win);
+      if (!dir) return { error: 'cancelled' };
+      return manager.addDirectory(dir);
+    });
+    registerPrep(CH.EXT_ADD, async (_e, dir: unknown) => {
+      if (this.settings.safeMode) return { error: 'Safe Mode is on. Turn it off in Settings to load extensions.' };
+      if (typeof dir !== 'string' || !this.extensions) return { error: 'Pick a folder that contains manifest.json.' };
+      const added = await this.extensions.addDirectory(dir);
+      if ('error' in added) return { error: added.error };
+      this.settings.extensions = this.extensions.persist();
+      this.toast(`Loaded ${added.name}`);
+      return added;
+    });
+    registerPrep(CH.EXT_ENABLE, async (_e, id: unknown) => {
+      if (this.settings.safeMode || !this.extensions) return false;
+      await this.extensions.enable(asString(id));
+      this.settings.extensions = this.extensions.persist();
+      return true;
+    });
+    registerPrep(CH.EXT_DISABLE, async (_e, id: unknown) => {
+      if (!this.extensions) return false;
+      await this.extensions.disable(asString(id));
+      this.settings.extensions = this.extensions.persist();
+      return true;
+    });
+    registerPrep(CH.EXT_RELOAD, async (_e, id: unknown) => {
+      if (!this.extensions) return null;
+      const record = this.extensions.list().find((r) => r.id === asString(id)) ?? null;
+      await this.extensions.reload(asString(id));
+      this.settings.extensions = this.extensions.persist();
+      return record;
+    });
+    registerPrep(CH.EXT_REMOVE, (_e, id: unknown) => {
+      this.extensions?.remove(asString(id));
+      this.settings.extensions = this.extensions?.persist() ?? [];
+      return true;
+    });
+    registerPrep(CH.EXT_DISABLE_ALL, () => {
+      // Configuration is kept; only the loaded instances are unloaded.
+      this.extensions?.unloadAll();
+      this.settings.extensions = this.extensions?.persist() ?? [];
+      return this.settings.extensions;
+    });
+    registerPrep(CH.EXT_OPEN_OPTIONS, (_e, id: unknown) => {
+      const record = this.extensions?.list().find((r) => r.id === asString(id));
+      if (!record) return { ok: false, error: 'That extension is not in the list.' };
+      if (!this.appSession) return { ok: false, error: 'The website session is not ready.' };
+      // Find the options page the manifest declares. Electron has no
+      // "openExtensionOptions" API, so this is the supported route: load the
+      // extension's own page in an ordinary window that shares the extension
+      // session but carries NO Juzt preload, so it cannot reach privileged IPC.
+      const loaded = this.appSession.extensions.getAllExtensions().find((e) => e.id === record.id);
+      const manifest = loaded?.manifest as { options_page?: unknown; options_ui?: { page?: unknown } } | undefined;
+      const page =
+        typeof manifest?.options_page === 'string'
+          ? manifest.options_page
+          : typeof manifest?.options_ui?.page === 'string'
+            ? manifest.options_ui.page
+            : null;
+      if (!loaded || !page) return { ok: false, error: 'This extension does not declare an options page.' };
+      const win = new BrowserWindow({
+        width: 720,
+        height: 560,
+        title: `${record.name} options`,
+        autoHideMenuBar: true,
+        webPreferences: {
+          // Same session so the page can talk to its own extension, but a bare
+          // renderer: no preload, no context bridge, no Juzt API.
+          session: this.appSession,
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: true,
+        },
+      });
+      win.loadURL(`${loaded.url.replace(/\/$/, '')}/${page.replace(/^\.?\//, '')}`);
+      return { ok: true };
+    });
+    registerPrep(CH.SAFE_MODE_SET, (_e, on: unknown) => {
+      const enabled = asBool(on);
+      this.settings.safeMode = enabled;
+      if (enabled) {
+        this.extensions?.unloadAll();
+        this.settings.webUserAgent = 'clean';
+        this.settings.siteCompat = {};
+        this.refreshWebIdentity();
+      }
+      this.settings.extensions = this.extensions?.persist() ?? [];
+      this.toast(enabled ? 'Safe Mode on: extensions paused for website tabs' : 'Safe Mode off: extensions resumed');
+      return enabled;
+    });
     registerPrep(CH.LIVE_STOP, () => {
       this.live.stop();
       return this.toPayload();
@@ -1257,6 +1574,17 @@ export class JuztApp {
     return this.toPayload();
   }
 
+  /** Present whatever the teacher is looking at right now. */
+  private async presentActive(): Promise<LivePayload> {
+    const tab = this.tabs.active();
+    if (!tab) {
+      this.toast('Open a website or a whiteboard first', 'error');
+      return this.toPayload();
+    }
+    if (tab.kind === 'whiteboard') return this.presentBoard(tab.boardId);
+    return this.presentTab(tab.id);
+  }
+
   private openBoardInPrep(boardId: string): string {
     const existing = this.tabs.tabs.find((t) => t.kind === 'whiteboard' && t.boardId === boardId);
     if (existing) {
@@ -1288,6 +1616,17 @@ function sanitizePatch(patch: unknown): Partial<Settings> {
   return (patch ?? {}) as Partial<Settings>;
 }
 
+/** Origin keys are `scheme://host[:port]` and nothing else. */
+function asOrigin(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  try {
+    const u = new URL(value);
+    return `${u.protocol}//${u.host}`;
+  } catch {
+    return null;
+  }
+}
+
 function sanitizeSettings(raw: Partial<Settings>): Settings {
   const base: Settings = { ...DEFAULT_SETTINGS, camera: { ...DEFAULT_CAMERA_CONFIG }, ...raw };
   const sizePreset = SIZE_PRESETS.some((p) => p.id === base.sizePreset) ? base.sizePreset : DEFAULT_SETTINGS.sizePreset;
@@ -1313,7 +1652,61 @@ function sanitizeSettings(raw: Partial<Settings>): Settings {
     privacyBackground: sanitizeBackground(base.privacyBackground),
     backgroundLibrary: Array.isArray(base.backgroundLibrary) ? base.backgroundLibrary.slice(0, 60) : [],
     camera: sanitizeCamera(base.camera),
+    tabShelfAlways: base.tabShelfAlways === true,
+    diagnostics: base.diagnostics === true,
+    firstRunDone: base.firstRunDone === true,
+    prepPaneOpen: base.prepPaneOpen === true,
+    tabMemoryPolicy: base.tabMemoryPolicy === 'autoDiscard' ? 'autoDiscard' : 'keep',
+    webUserAgent: base.webUserAgent === 'app' || base.webUserAgent === 'electron' ? base.webUserAgent : 'clean',
+    siteCompat: sanitizeSiteCompat(base.siteCompat),
+    extensions: sanitizeExtensions(base.extensions),
+    extensionDevMode: base.extensionDevMode === true,
+    safeMode: base.safeMode === true,
   };
+}
+
+/** Per-origin identity overrides: origin keys only, and only known modes. */
+function sanitizeSiteCompat(raw: unknown): Record<string, UserAgentMode> {
+  const out: Record<string, UserAgentMode> = {};
+  if (!raw || typeof raw !== 'object') return out;
+  for (const [origin, mode] of Object.entries(raw as Record<string, unknown>)) {
+    if (!isOriginKey(origin)) continue;
+    out[origin] = mode === 'app' || mode === 'electron' ? mode : 'clean';
+  }
+  return out;
+}
+
+function isOriginKey(value: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:\/\/[^/\s?#]+$/i.test(value);
+}
+
+/**
+ * Persisted extension references. Only directory paths are stored — never
+ * extension code — and every field is re-validated on read.
+ */
+function sanitizeExtensions(raw: unknown): ExtensionRecord[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, 64).flatMap((entry) => {
+    const e = (entry ?? {}) as Partial<ExtensionRecord>;
+    if (typeof e.path !== 'string' || e.path.length === 0) return [];
+    const mv = e.manifestVersion === 2 || e.manifestVersion === 3 ? e.manifestVersion : 0;
+    return [
+      {
+        id: typeof e.id === 'string' && e.id.length > 0 ? e.id.slice(0, 200) : e.path.slice(0, 200),
+        path: e.path.slice(0, 4000),
+        name: typeof e.name === 'string' && e.name.length > 0 ? e.name.slice(0, 200) : 'Unknown extension',
+        version: typeof e.version === 'string' ? e.version.slice(0, 40) : '0',
+        manifestVersion: mv,
+        description: typeof e.description === 'string' ? e.description.slice(0, 400) : undefined,
+        enabled: e.enabled !== false,
+        // A fresh launch always starts from an unknown state: the extension is
+        // re-loaded by ExtensionManager, which reports the real result.
+        status: 'unknown' as const,
+        error: typeof e.error === 'string' ? e.error.slice(0, 500) : undefined,
+        addedAt: typeof e.addedAt === 'number' ? e.addedAt : Date.now(),
+      },
+    ];
+  });
 }
 
 function sanitizeCamera(raw: Partial<CameraConfig> | undefined): CameraConfig {

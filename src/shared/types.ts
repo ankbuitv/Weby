@@ -7,6 +7,8 @@
  * favorites or prep notes.
  */
 
+import type { UserAgentMode } from './engine';
+
 /* ------------------------------------------------------------------ *
  * Basics
  * ------------------------------------------------------------------ */
@@ -64,7 +66,9 @@ export interface BackgroundPreset {
 
 export const DEFAULT_LIVE_BACKGROUND: BackgroundSpec = {
   kind: 'gradient',
-  gradient: 'radial-gradient(120% 120% at 20% 10%, #1b2338 0%, #0b0e15 55%, #07080c 100%)',
+  // V2 presentation background: a calm dark blue → violet field that fills the
+  // whole window and never competes with the lesson.
+  gradient: 'radial-gradient(125% 120% at 18% 6%, #26325e 0%, #171d3a 38%, #0b0e1a 70%, #06070d 100%)',
   dim: 0,
 };
 
@@ -606,9 +610,30 @@ export interface Settings {
 
   camera: CameraConfig;
 
+  /** Website identity Juzt presents to websites. Engine-accurate by default. */
+  webUserAgent: UserAgentMode;
+  /**
+   * Per-origin compatibility overrides, keyed by scheme://host[:port].
+   *
+   * `clean`     — Chrome-compatible UA derived from the real Chromium build.
+   * `app`       — the same UA plus the `Juzt/<version>` token.
+   * `electron`  — the stock Electron identity.
+   * There is deliberately no "pretend to be a newer Chrome" option: the engine
+   * is already modern, and a fake version is a spoofing trap.
+   */
+  siteCompat: Record<string, UserAgentMode>;
+  /** Extensions the teacher has approved (directory references only). */
+  extensions: ExtensionRecord[];
+  /** Developer mode unlocks Load Unpacked / reload / raw errors. Off by default. */
+  extensionDevMode: boolean;
+  /** Safe mode: launch website tabs with extensions off and default compat. */
+  safeMode: boolean;
+
   tabMemoryPolicy: 'keep' | 'autoDiscard';
   /** Single-monitor private pane (Ctrl+Shift+P). */
   prepPaneOpen: boolean;
+  /** Keep the compact tab shelf on screen even with a single tab. */
+  tabShelfAlways: boolean;
   /** Development diagnostics are opt-in. */
   diagnostics: boolean;
   firstRunDone: boolean;
@@ -622,13 +647,18 @@ export interface Settings {
 
 export const DEFAULT_SETTINGS: Settings = {
   schemaVersion: SCHEMA_VERSION,
-  presentationMode: 'dual',
+  // V2 default: one calm window — background + website card + left toolbar.
+  // Dual monitor output is opt-in ("Start Presentation"), never the default.
+  presentationMode: 'single',
   layout: 'focus',
   sizePreset: 'comfortable',
   customScale: 0.8,
   card: { ...DEFAULT_CARD },
   zoom: 1,
   safeNavigation: true,
+
+  /** Compact tab shelf: hidden while a single tab is open unless forced on. */
+  tabShelfAlways: false,
 
   liveBackground: { ...DEFAULT_LIVE_BACKGROUND },
   holdingBackground: { ...DEFAULT_HOLDING_BACKGROUND },
@@ -651,6 +681,12 @@ export const DEFAULT_SETTINGS: Settings = {
   numberStampStart: 1,
 
   camera: { ...DEFAULT_CAMERA_CONFIG },
+
+  webUserAgent: 'clean',
+  siteCompat: {},
+  extensions: [],
+  extensionDevMode: false,
+  safeMode: false,
 
   tabMemoryPolicy: 'keep',
   prepPaneOpen: false,
@@ -676,6 +712,31 @@ export interface ScreenSource {
   name: string;
   thumbnail: string | undefined;
   displayId?: string;
+}
+
+/* ------------------------------------------------------------------ *
+ * Website identity / extensions
+ * ------------------------------------------------------------------ */
+
+/** How an extension is currently doing. Reported privately, never to LIVE. */
+export type ExtensionStatus = 'loaded' | 'disabled' | 'failed' | 'unknown';
+
+/** An approved extension directory reference (persisted; reloaded on start). */
+export interface ExtensionRecord {
+  /** Stable id: the extension id Electron reports once loaded. */
+  id: string;
+  /** Absolute path of the unpacked extension directory. */
+  path: string;
+  name: string;
+  version: string;
+  /** `2` or `3`, read from the manifest. */
+  manifestVersion: number;
+  description?: string;
+  enabled: boolean;
+  status: ExtensionStatus;
+  /** Last load error, shown only in PREP developer mode. */
+  error?: string;
+  addedAt: number;
 }
 
 /* ------------------------------------------------------------------ *

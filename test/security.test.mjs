@@ -141,3 +141,42 @@ test('events the PREP UI relies on exist under stable names', () => {
   for (const value of Object.values(CH)) assert.ok(value.includes(':'), value);
   for (const value of Object.values(EV)) assert.ok(value.startsWith('ev:'), value);
 });
+
+test('engine and extension channels are PREP-only, never reachable from LIVE', () => {
+  // The whole point of the compatibility work: it is a private teacher
+  // diagnostic. If any of these ever appear in LIVE_ALLOWED, engine details and
+  // extension control would leak into the audience output.
+  const teacherOnly = [
+    CH.COMPAT_INFO,
+    CH.COMPAT_SET_SITE,
+    CH.COMPAT_RESET_SITE,
+    CH.COMPAT_CLEAR_SITE_DATA,
+    CH.EXT_LIST,
+    CH.EXT_ADD,
+    CH.EXT_PICK,
+    CH.EXT_ENABLE,
+    CH.EXT_DISABLE,
+    CH.EXT_RELOAD,
+    CH.EXT_REMOVE,
+    CH.EXT_DISABLE_ALL,
+    CH.SAFE_MODE_SET,
+  ];
+  for (const channel of teacherOnly) {
+    assert.equal(LIVE_ALLOWED.has(channel), false, `LIVE must not reach ${channel}`);
+    assert.ok(channel.includes(':'), channel);
+  }
+  // ...and they must not be silently missing from the catalogue either.
+  for (const channel of teacherOnly) assert.ok(Object.values(CH).includes(channel), `${channel} must be declared`);
+});
+
+test('the live API object carries no compatibility or extension surface', () => {
+  const preload = readFileSync(join(root, 'src/preload/index.ts'), 'utf8');
+  const liveSection = preload.slice(preload.indexOf('const liveApi'), preload.indexOf('const overlayApi'));
+  for (const banned of ['CH.COMPAT_', 'CH.EXT_', 'CH.SAFE_MODE_SET', 'compat:', 'extensions:']) {
+    assert.equal(liveSection.includes(banned), false, `liveApi must not expose ${banned}`);
+  }
+  // The PREP API does expose it — so the test can tell the two apart.
+  const prepSection = preload.slice(preload.indexOf('const prepApi'));
+  assert.ok(prepSection.includes('CH.COMPAT_INFO'), 'prepApi must expose the engine report');
+  assert.ok(prepSection.includes('CH.EXT_LIST'), 'prepApi must expose the extension list');
+});

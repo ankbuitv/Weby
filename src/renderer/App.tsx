@@ -1,12 +1,12 @@
 import React from 'react';
-import { computeGeometry, PREP_CHROME, cardBorderCss, cardShadowCss } from '../shared/layout';
+import { computeGeometry, cardBorderCss, cardShadowCss, TOOLBAR, TOP_BAR, TAB_SHELF, workspaceInsets, shelfVisible as shelfOn } from '../shared/layout';
 import type { LivePayload, Rect, Settings, TabState } from '../shared/types';
 import { tabLabel } from '../shared/types';
-import { BackgroundLayer, HoldingScreen, PrivacyScreen } from './live/effects';
-import { OutsideCardClip, clipStyle } from './live/mask';
-import { WhiteboardCanvas } from './whiteboard/render';
+import { resolveWorkspace } from '../shared/workspace';
+import { BackgroundLayer } from './live/effects';
 import { WhiteboardEditor } from './whiteboard/WhiteboardEditor';
 import { Icon } from './components/Icons';
+import { ExtensionsMenu } from './components/BrowserPanels';
 import { Logo } from './components/Logo';
 import { Toolbar } from './components/Toolbar';
 import { Palette } from './components/Palette';
@@ -28,26 +28,36 @@ import { actions } from './state/actions';
 import { sel, store, useSel } from './state/store';
 
 /**
- * PREP shell (`Juzt Prep`).
+ * PREP shell.
  *
- *   Dual   — this window is the teacher's private workspace: the active tab's
- *            native view fills the card, the audience output lives in `Juzt Live`.
- *   Single — this window *is* the audience output: the card renders the audience
- *            composition, and the private pane holds the whiteboard editor and
- *            private browsing.
+ *   Single  (default) — this window *is* the V2 workspace: full-window
+ *            presentation background, one large centred content card, one
+ *            compact floating toolbar on the left. Exactly one of NEW_TAB /
+ *            WEB / WHITEBOARD is ever mounted inside the card; privacy and
+ *            freeze are the only overlays, and they are drawn by the card
+ *            overlay view (the one layer that can paint above the page).
+ *   Dual    — "Start Presentation" opened `Juzt Live`; this window becomes the
+ *            teacher's private prep workspace and the audience lives in the
+ *            other window. The two are never rendered on top of each other.
  *
- * The renderer never positions native views: main owns geometry and tells the
- * card rect back through `EV.GEOM`; here we only draw the frame around it.
+ * Geometry is never guessed here: main owns the native views and publishes the
+ * authoritative card rect through `EV.GEOM`; this shell only draws the frame
+ * around exactly that rectangle (and falls back to the same
+ * `computeGeometry()` call main makes while the first message is in flight).
  */
 
 const App: React.FC = () => {
   const ready = useSel((s) => s.ready);
   const settings = useSel((s) => s.settings);
-  const [viewport, setViewport] = React.useState({ w: window.innerWidth, h: window.innerHeight });
-  const [cardRect, setCardRect] = React.useState<Rect | null>(null);
+  const tabs = useSel((s) => s.tabs);
+  const activeTab = useSel(sel.activeTab);
 
   useShortcuts(ready);
 
+  const [viewport, setViewport] = React.useState({ w: window.innerWidth, h: window.innerHeight });
+  const [geom, setGeom] = React.useState<(Rect & { windowSize: { width: number; height: number }; insets?: { top: number; right: number; bottom: number; left: number }; shelf?: boolean }) | null>(null);
+
+  // One coalesced resize observer for the whole shell.
   React.useEffect(() => {
     let pending = 0;
     const onResize = () => {
@@ -58,15 +68,29 @@ const App: React.FC = () => {
       });
     };
     window.addEventListener('resize', onResize);
-    const off = window.juzt.on.geom((geom) => setCardRect(geom.card));
     return () => {
       window.removeEventListener('resize', onResize);
       if (pending) cancelAnimationFrame(pending);
+    };
+  }, []);
+
+  React.useEffect(() => {
+    const off = window.juzt.on.geom((g) =>
+      setGeom({
+        ...g.card,
+        windowSize: g.windowSize,
+        insets: (g as { insets?: { top: number; right: number; bottom: number; left: number } }).insets,
+        shelf: (g as { shelf?: boolean }).shelf,
+      }),
+    );
+    return () => {
       off();
     };
   }, []);
 
-  const single = settings.presentationMode === 'single';
+  const single = settings.presentationMode !== 'dual';
+  const shelf = shelfOn(tabs.length, !!settings.tabShelfAlways);
+
   const geometry = React.useMemo(
     () =>
       computeGeometry({
@@ -79,18 +103,60 @@ const App: React.FC = () => {
         layout: settings.layout,
         card: settings.card,
         paneOpen: settings.prepPaneOpen,
+        shelfVisible: shelf,
       }),
-    [single, viewport, settings],
+    [single, viewport, settings, shelf],
   );
-  const card = cardRect ?? (single ? geometry.live : geometry.prepCard);
+
+  // Trust main's rect only while it describes the window we are actually
+  // looking at; otherwise fall back to the identical local computation. That is
+  // what keeps the native view glued to the DOM frame through startup, resize,
+  // maximise, fullscreen and the shelf appearing/disappearing.
+  const sameWindow =
+    !!geom && Math.abs(geom.windowSize.width - viewport.w) < 2 && Math.abs(geom.windowSize.height - viewport.h) < 2;
+  const card = sameWindow && geom ? geom : single ? geometry.live : geometry.prepCard;
+  const pane = geometry.pane;
+
+  // The very same numbers that placed the card become CSS custom properties, so
+  // the toolbar, the shelf and the frame can never disagree with the native view.
+  const insetVars = React.useMemo(
+    () =>
+      ({
+        '--jz-inset-left': `${geometry.insets.left}px`,
+        '--jz-inset-top': `${geometry.insets.top}px`,
+        '--jz-inset-right': `${geometry.insets.right}px`,
+        '--jz-inset-bottom': `${geometry.insets.bottom}px`,
+        '--jz-card-x': `${card.x}px`,
+        '--jz-card-y': `${card.y}px`,
+        '--jz-card-w': `${card.width}px`,
+        '--jz-card-h': `${card.height}px`,
+        '--jz-card-radius': `${Math.max(0, settings.card.radius)}px`,
+        '--jz-toolbar-w': `${TOOLBAR.width}px`,
+        '--jz-toolbar-offset': `${TOOLBAR.offsetLeft}px`,
+        '--jz-toolbar-radius': `${TOOLBAR.radius}px`,
+        '--jz-topbar-h': `${TOP_BAR.height}px`,
+        '--jz-shelf-h': `${TAB_SHELF.height}px`,
+      }) as React.CSSProperties,
+    [geometry, card, settings.card.radius],
+  );
 
   return (
-    <div className={`jz-app ${single ? 'is-single' : ''} ${useSel((s) => s.cleanMode) ? 'is-clean' : ''}`}>
-      <TitleBar />
-      <TabStrip />
-      <Workspace card={card} pane={geometry.pane} single={single} />
+    <div className={`jz-app ${single ? 'is-single' : 'is-dual'} ${useSel((s) => s.cleanMode) ? 'is-clean' : ''}`}>
+      {/* 1 — the full-window presentation background */}
+      <BackgroundLayer spec={settings.liveBackground} size={{ w: viewport.w, h: viewport.h }} className="jz-stage-bg" />
+
+      {/* 2 — tiny floating top strip: brand, Present, subtle window controls */}
+      <TopBar single={single} />
+
+      {/* 3 — compact tab shelf, only when it earns its space */}
+      {shelf ? <TabShelf /> : null}
+
+      {/* 4 — ONE content card */}
+      <Workspace card={card} pane={pane} single={single} insetVars={insetVars} />
+
+      {/* 5 — the compact floating teaching toolbar */}
       <Toolbar />
-      <StatusHints />
+
       <Palette />
       <SettingsPanel />
       <ScenesPanel />
@@ -107,97 +173,135 @@ const App: React.FC = () => {
 };
 
 /* ------------------------------------------------------------------ *
- * Title bar
+ * Top strip — deliberately tiny. Never a full-width application header.
  * ------------------------------------------------------------------ */
 
-const TitleBar: React.FC = () => {
+const TopBar: React.FC<{ single: boolean }> = ({ single }) => {
   const appName = useSel((s) => s.appName);
   const version = useSel((s) => s.version);
-  const status = useSel(sel.status);
   const presenting = useSel((s) => !!s.live && s.live.presentation.kind !== 'holding');
   const progress = useSel((s) => s.presentProgress);
-  const presentingLabel = useSel((s) => s.live?.presentation.label ?? '');
   const settings = useSel((s) => s.settings);
+  const extensionsOpen = useSel((s) => s.extensionsOpen);
+  const loadedCount = useSel((s) => s.extensions.filter((e) => e.status === 'loaded').length);
+  const safeMode = useSel((s) => s.settings.safeMode);
 
   return (
-    <header className="jz-titlebar" onDoubleClick={() => void window.juzt.window.toggleMaximize()}>
-      <div className="jz-titlebar__brand">
-        <Logo size={22} />
-        <strong>{appName}</strong>
-        <span className="jz-titlebar__version">v{version}</span>
+    <header className="jz-top" onDoubleClick={() => void window.juzt.window.toggleMaximize()}>
+      <div className="jz-top__drag">
+        <Logo size={16} variant="mono" />
+        <span className="jz-top__name">{appName}</span>
+        <span className="jz-top__ver">v{version}</span>
       </div>
 
-      <div className="jz-titlebar__center">
-        <span className={`jz-status jz-status--${status}`}>
-          {status === 'privacy' ? '◉ PRIVACY' : status === 'frozen' ? '❄ FROZEN' : status === 'live' ? '● LIVE' : '○ HOLDING'}
-        </span>
-        {presenting && presentingLabel ? <span className="jz-titlebar__label">{presentingLabel}</span> : null}
-        {progress ? <span className={`jz-progress jz-progress--${progress.stage}`}>{progress.message ?? 'Preparing the audience view…'}</span> : null}
-      </div>
-
-      <div className="jz-titlebar__actions">
+      <div className="jz-top__actions">
         {progress?.stage === 'error' ? (
           <button className="jz-chip jz-chip--warn" onClick={() => void actions.retryPresent()}>
             Retry
           </button>
         ) : null}
-        {presenting ? (
-          <button className="jz-chip jz-chip--danger" title="Stop presenting (Esc)" onClick={() => void actions.stopPresenting()}>
-            Stop
+
+        {single ? (
+          <button className="jz-present" title="Start Presentation (Ctrl+Enter) — opens Juzt Live" onClick={() => void actions.startPresentation()}>
+            <Icon.broadcast size={14} /> Present
           </button>
+        ) : presenting ? (
+          <>
+            <button
+              className="jz-chip jz-chip--danger"
+              title="Stop presenting (Esc)"
+              onClick={() => void actions.stopPresenting()}
+            >
+              Stop
+            </button>
+            <button className="jz-present is-live" title="Present the active tab (Ctrl+Enter)" onClick={() => void actions.presentActive()}>
+              <Icon.broadcast size={14} /> Presenting
+            </button>
+          </>
         ) : (
-          <button className="jz-chip jz-chip--primary" title="Present this tab (Ctrl+Enter)" onClick={() => void actions.presentActive()}>
-            <Icon.broadcast size={16} /> Present
+          <button className="jz-present" title="Present the active tab (Ctrl+Enter)" onClick={() => void actions.presentActive()}>
+            <Icon.broadcast size={14} /> Present
           </button>
         )}
+
         <button
-          className="jz-chip"
-          title={settings.presentationMode === 'single' ? 'Switch to dual monitor mode' : 'Switch to single window mode'}
-          onClick={() => void actions.setSettings({ presentationMode: settings.presentationMode === 'single' ? 'dual' : 'single' })}
+          className="jz-top__mini"
+          title={single ? 'Switch to dual monitor output' : 'Back to the single calm window'}
+          onClick={() => void actions.setSettings({ presentationMode: single ? 'dual' : 'single' })}
         >
-          <Icon.monitor size={16} />
-          {settings.presentationMode === 'single' ? 'Single' : 'Dual'}
+          <Icon.monitor size={14} />
+          {single ? 'Dual' : 'Single'}
         </button>
-        <button className="jz-win" title="Minimise" onClick={() => void window.juzt.window.minimize()}>
-          <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 5h8" stroke="currentColor" strokeWidth="1.4" /></svg>
-        </button>
-        <button className="jz-win" title="Maximise" onClick={() => void window.juzt.window.toggleMaximize()}>
-          <svg width="10" height="10" viewBox="0 0 10 10"><rect x="1.5" y="1.5" width="7" height="7" fill="none" stroke="currentColor" strokeWidth="1.2" /></svg>
-        </button>
-        <button className="jz-win jz-win--close" title="Close" onClick={() => void window.juzt.window.close()}>
-          <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 1l8 8M9 1l-8 8" stroke="currentColor" strokeWidth="1.3" /></svg>
-        </button>
+
+        {/* Extensions: PREP only. LIVE never renders a top bar at all. */}
+        <span className="jz-top__extwrap">
+          <button
+            className={`jz-top__mini jz-top__ext${loadedCount > 0 ? ' has-ext' : ''}${safeMode ? ' is-off' : ''}`}
+            title={safeMode ? 'Extensions paused (Safe Mode)' : `${loadedCount} extension${loadedCount === 1 ? '' : 's'} running`}
+            onClick={() => actions.toggleExtensionsMenu()}
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+              <path
+                d="M6 1.6h4l.6 2.1 1.9 1.1 2.1-.6 2 3.4-1.6 1.4v2.2l1.6 1.4-2 3.4-2.1-.6-1.9 1.1L10 14.4H6l-.6-2.1-1.9-1.1-2.1.6-2-3.4L1 6.9V4.7L-.6 3.3l2-3.4 2.1.6L5.4 3.7 6 1.6Z"
+                transform="translate(1)"
+                stroke="currentColor"
+                strokeWidth="1.1"
+              />
+              <circle cx="8" cy="8" r="1.6" stroke="currentColor" strokeWidth="1.1" />
+            </svg>
+            {loadedCount > 0 ? <b>{loadedCount}</b> : null}
+          </button>
+          {extensionsOpen ? <ExtensionsMenu /> : null}
+        </span>
+
+        <span className="jz-top__win">
+          <button className="jz-win" title="Minimise" onClick={() => void window.juzt.window.minimize()}>
+            <svg width="10" height="10" viewBox="0 0 10 10">
+              <path d="M1 5h8" stroke="currentColor" strokeWidth="1.4" />
+            </svg>
+          </button>
+          <button className="jz-win" title="Maximise" onClick={() => void window.juzt.window.toggleMaximize()}>
+            <svg width="10" height="10" viewBox="0 0 10 10">
+              <rect x="1.5" y="1.5" width="7" height="7" fill="none" stroke="currentColor" strokeWidth="1.2" />
+            </svg>
+          </button>
+          <button className="jz-win jz-win--close" title="Close" onClick={() => void window.juzt.window.close()}>
+            <svg width="10" height="10" viewBox="0 0 10 10">
+              <path d="M1 1l8 8M9 1l-8 8" stroke="currentColor" strokeWidth="1.3" />
+            </svg>
+          </button>
+        </span>
       </div>
     </header>
   );
 };
 
 /* ------------------------------------------------------------------ *
- * Tab strip
+ * Tab shelf — compact, above the card, collapsed unless it is needed
  * ------------------------------------------------------------------ */
 
-const TabStrip: React.FC = () => {
+const TabShelf: React.FC = () => {
   const tabs = useSel(sel.tabTitles, (a, b) => JSON.stringify(a) === JSON.stringify(b));
   const activeId = useSel((s) => s.activeTabId);
-  const presented = useSel((s) => s.live?.presentation.label ?? null);
-  const [dragIndex, setDragIndex] = React.useState<number | null>(null);
-  const stripRef = React.useRef<HTMLDivElement>(null);
-  const [overflowOpen, setOverflowOpen] = React.useState(false);
+  const [menuOpen, setMenuOpen] = React.useState(false);
+  const menuRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    window.addEventListener('mousedown', onDown, true);
+    return () => window.removeEventListener('mousedown', onDown, true);
+  }, [menuOpen]);
 
   return (
-    <nav className="jz-tabstrip" ref={stripRef}>
-      <div className="jz-tabstrip__scroll">
-        {tabs.map((tab, index) => (
+    <nav className="jz-shelf">
+      <div className="jz-shelf__scroll">
+        {tabs.map((tab) => (
           <button
             key={tab.id}
-            className={`jz-tab ${tab.id === activeId ? 'is-active' : ''} ${tab.pinned ? 'is-pinned' : ''} ${tab.kind === 'whiteboard' ? 'is-board' : ''}`}
-            draggable
-            onDragStart={() => setDragIndex(index)}
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={() => {
-              if (dragIndex !== null && dragIndex !== index) void actions.reorderTabs(dragIndex, index);
-              setDragIndex(null);
-            }}
+            className={`jz-tab ${tab.id === activeId ? 'is-active' : ''} ${tab.kind === 'whiteboard' ? 'is-board' : ''}`}
             onClick={() => void actions.activateTab(tab.id)}
             onContextMenu={(e) => {
               e.preventDefault();
@@ -207,16 +311,15 @@ const TabStrip: React.FC = () => {
           >
             <span className="jz-tab__icon">
               {tab.kind === 'whiteboard' ? (
-                <Icon.board size={18} />
+                <Icon.board size={15} />
               ) : tab.favicon ? (
-                <img src={tab.favicon} alt="" width={18} height={18} />
+                <img src={tab.favicon} alt="" width={15} height={15} />
               ) : (
-                <Icon.globe size={18} />
+                <Icon.globe size={15} />
               )}
             </span>
-            <span className="jz-tab__label">{tab.pinned ? '' : tab.label}</span>
-            {presented && presented === tab.label && tab.kind !== 'whiteboard' ? <span className="jz-tab__presenting" title="Presented" /> : null}
-            {tab.pinned ? null : (
+            <span className="jz-tab__label">{tab.label}</span>
+            {tabs.length > 1 ? (
               <span
                 className="jz-tab__x"
                 title="Close tab (Ctrl+W)"
@@ -225,82 +328,81 @@ const TabStrip: React.FC = () => {
                   void actions.closeTab(tab.id);
                 }}
               >
-                <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 1l8 8M9 1l-8 8" stroke="currentColor" strokeWidth="1.3" /></svg>
+                <svg width="9" height="9" viewBox="0 0 10 10">
+                  <path d="M1 1l8 8M9 1l-8 8" stroke="currentColor" strokeWidth="1.4" />
+                </svg>
               </span>
-            )}
+            ) : null}
           </button>
         ))}
       </div>
 
-      <div className="jz-tabstrip__actions">
-        <button className="jz-tabstrip__action" title="New tab (Ctrl+T)" onClick={() => void actions.newTab()}>
-          <Icon.plus size={18} />
+      <div className="jz-shelf__actions" ref={menuRef}>
+        <button className="jz-shelf__action" title="New web tab (Ctrl+T)" onClick={() => void actions.newTab()}>
+          <Icon.plus size={16} />
         </button>
-        <button className="jz-tabstrip__action" title="New whiteboard (Ctrl+Shift+N)" onClick={() => void actions.newWhiteboardTab()}>
-          <Icon.board size={18} />
+        <button className="jz-shelf__action" title="New whiteboard (Ctrl+Shift+N)" onClick={() => void actions.newWhiteboardTab()}>
+          <Icon.board size={16} />
         </button>
         <button
-          className="jz-tabstrip__action"
+          className="jz-shelf__action"
           title="All tabs"
-          onClick={() => setOverflowOpen((v) => !v)}
-          aria-expanded={overflowOpen}
+          aria-expanded={menuOpen}
+          onClick={() => setMenuOpen((v) => !v)}
         >
-          <Icon.chevronDown size={18} />
+          <Icon.chevronDown size={16} />
         </button>
-      </div>
 
-      {overflowOpen ? (
-        <div className="jz-menu jz-menu--tabs">
-          {tabs.map((tab, index) => (
-            <button
-              key={tab.id}
-              className={tab.id === activeId ? 'is-active' : ''}
-              onClick={() => {
-                void actions.activateTab(tab.id);
-                setOverflowOpen(false);
-              }}
-            >
-              <span className="jz-menu__index">{index + 1 > 9 ? '' : index + 1}</span>
-              <span className="jz-menu__label">{tab.label}</span>
-              {tab.favicon ? <img src={tab.favicon} alt="" width={16} height={16} /> : null}
-            </button>
-          ))}
-        </div>
-      ) : null}
+        {menuOpen ? (
+          <div className="jz-menu jz-menu--tabs">
+            {tabs.map((tab, index) => (
+              <button
+                key={tab.id}
+                className={tab.id === activeId ? 'is-active' : ''}
+                onClick={() => {
+                  void actions.activateTab(tab.id);
+                  setMenuOpen(false);
+                }}
+              >
+                <span className="jz-menu__index">{index + 1 > 9 ? '' : index + 1}</span>
+                <span className="jz-menu__label">{tab.label}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
     </nav>
   );
 };
 
 /* ------------------------------------------------------------------ *
- * Workspace + card
+ * Workspace + the one content card
  * ------------------------------------------------------------------ */
 
-const Workspace: React.FC<{ card: Rect; pane: Rect | null; single: boolean }> = ({ card, pane, single }) => {
+const Workspace: React.FC<{ card: Rect; pane: Rect | null; single: boolean; insetVars: React.CSSProperties }> = ({ card, pane, single, insetVars }) => {
   const tab = useSel(sel.activeTab);
   const live = useSel((s) => s.live);
   const boardDoc = useSel(sel.activeBoard);
-  const presentingBoard = useSel((s) => s.live?.presentation.boardId ?? null);
-  const boardShown = useSel((s) => s.live?.presentation.kind === 'whiteboard');
-  const clean = useSel((s) => s.cleanMode);
   const settings = useSel((s) => s.settings);
-  const [size, setSize] = React.useState({ w: window.innerWidth, h: window.innerHeight });
 
-  React.useEffect(() => {
-    const onResize = () => setSize({ w: window.innerWidth, h: window.innerHeight });
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
-  }, []);
+  const workspace = resolveWorkspace({
+    mode: settings.presentationMode,
+    active: tab,
+    privacy: !!live?.flags.privacy,
+    frozen: !!live?.flags.frozen,
+    presentation: live?.presentation.kind ?? 'holding',
+  });
 
   const radius = Math.max(0, settings.card.radius);
   const border = cardBorderCss(settings.card.border);
   const shadow = cardShadowCss(settings.card.shadow);
-  const internal = tab && tab.kind === 'web' && tab.url.startsWith('juzt://') ? tab.url : null;
-  const boardForCard = single && boardShown ? boardDoc : null;
 
+  // A website tab renders nothing in the DOM: its native WebContentsView is
+  // placed by main at exactly this rect. The DOM only draws the frame.
   return (
-    <main className="jz-workspace" style={{ paddingTop: PREP_CHROME.top - 8 }}>
+    <main className="jz-workspace" style={insetVars}>
       <div
-        className="jz-card"
+        className={`jz-card is-${workspace.kind} ${workspace.overlay !== 'none' ? 'is-covered' : ''}`}
         style={{
           left: card.x,
           top: card.y,
@@ -311,47 +413,40 @@ const Workspace: React.FC<{ card: Rect; pane: Rect | null; single: boolean }> = 
           border: border.width > 0 ? `${border.width}px solid ${border.color}` : undefined,
         }}
       >
-        {/* The native website view (if any) sits exactly here, above this DOM. */}
-        {tab && tab.kind === 'whiteboard' && !single ? <WhiteboardEditor doc={boardDoc ?? emptyBoard(tab)} /> : null}
-        {tab && tab.kind === 'whiteboard' && single && boardShown && !boardDoc ? <div className="jz-card__empty">Loading board…</div> : null}
-        {internal ? <InternalPage url={internal} /> : null}
-        {single ? <SingleAudience live={live} card={{ x: 0, y: 0, width: card.width, height: card.height }} size={{ w: card.width, h: card.height }} /> : null}
-        {!tab ? <div className="jz-card__empty">Open a tab to get started</div> : null}
+        {workspace.kind === 'whiteboard' && boardDoc ? <WhiteboardEditor doc={boardDoc} /> : null}
+        {workspace.kind === 'whiteboard' && !boardDoc ? <div className="jz-card__empty">Opening the whiteboard…</div> : null}
+        {workspace.kind === 'newtab' && tab && tab.kind === 'web' && tab.url.startsWith('juzt://') ? <InternalPage url={tab.url} /> : null}
+        {workspace.kind === 'newtab' && !tab ? <NewTabFallback /> : null}
       </div>
 
-      {single && pane ? <PrepPane pane={pane} activeTab={tab} board={boardForCard} /> : null}
-      {!clean ? null : null}
+      {single && pane ? <PrepPane pane={pane} activeTab={tab} board={boardDoc} /> : null}
     </main>
   );
 };
 
-/** Single mode: the DOM copy of the audience composition (visible when no native view covers it). */
-const SingleAudience: React.FC<{ live: LivePayload | null; card: Rect; size: { w: number; h: number } }> = ({ live, card, size }) => {
-  if (!live) return null;
-  const presenting = live.presentation.kind !== 'holding';
-  const showingBoard = live.presentation.kind === 'whiteboard';
-  const boardDoc = useSel((s) => (showingBoard && live.presentation.boardId ? s.boardDocs[live.presentation.boardId] : undefined));
-  const radius = Math.max(0, live.surface.card.radius);
-  const outsideId = 'jz-prep-outside';
-
+/** Shown only before main has handed us a tab list at all. */
+const NewTabFallback: React.FC = () => {
+  const appName = useSel((s) => s.appName);
   return (
-    <div className="jz-audience">
-      <div className="jz-audience__bg" style={clipStyle(outsideId)}>
-        <OutsideCardClip id={outsideId} local={{ w: size.w, h: size.h }} card={{ x: 0, y: 0, width: size.w, height: size.h }} radius={0} />
-      </div>
-      {showingBoard && boardDoc ? (
-        <div className="jz-audience__board" style={{ borderRadius: radius }}>
-          <WhiteboardCanvas doc={boardDoc} size={{ w: size.w, h: size.h }} />
-        </div>
-      ) : null}
-      {live.flags.privacy ? <PrivacyScreen live={live} size={{ w: size.w, h: size.h }} /> : null}
-      {!presenting ? <HoldingScreen live={live} size={{ w: size.w, h: size.h }} /> : null}
-      <span className="jz-audience__hint">{presenting ? 'Audience output' : 'Holding screen — press Ctrl+Enter to present'}</span>
+    <div className="jz-start">
+      <Logo size={54} />
+      <h1>{appName}</h1>
+      <form
+        className="jz-start__field"
+        onSubmit={(e) => {
+          e.preventDefault();
+          const value = (e.currentTarget.elements.namedItem('q') as HTMLInputElement | null)?.value ?? '';
+          if (value.trim()) void actions.navigateActive(value.trim());
+        }}
+      >
+        <Icon.search size={17} />
+        <input name="q" placeholder="Search or enter address" autoFocus spellCheck={false} />
+      </form>
     </div>
   );
 };
 
-/** Private pane (single mode): whiteboard editor, private browsing hint, notes. */
+/** Private pane (single monitor): a quiet side surface, off by default. */
 const PrepPane: React.FC<{ pane: Rect; activeTab: TabState | null; board: import('../shared/types').WhiteboardDoc | null }> = ({ pane, activeTab, board }) => {
   const name = activeTab ? tabLabel(activeTab) : 'Private pane';
   return (
@@ -361,65 +456,11 @@ const PrepPane: React.FC<{ pane: Rect; activeTab: TabState | null; board: import
         <strong>{name}</strong>
       </header>
       <div className="jz-pane__body">
-        {board ? <WhiteboardEditor doc={board} /> : <p className="jz-pane__hint">This pane is private — the audience never sees it. Open a whiteboard tab (Ctrl+Shift+N) to edit here.</p>}
+        {board ? <WhiteboardEditor doc={board} /> : <p className="jz-pane__hint">This pane is private — the audience never sees it.</p>}
       </div>
     </aside>
   );
 };
 
-/* ------------------------------------------------------------------ *
- * Status hints (only while relevant — never permanent help text)
- * ------------------------------------------------------------------ */
-
-const StatusHints: React.FC = () => {
-  const tool = useSel((s) => s.tool);
-  const clean = useSel((s) => s.cleanMode);
-  const cameraDrag = useSel((s) => s.cameraDrag);
-  const privacy = useSel((s) => s.live?.flags.privacy ?? false);
-  const frozen = useSel((s) => s.live?.flags.frozen ?? false);
-  const single = useSel((s) => s.settings.presentationMode === 'single');
-  if (clean) {
-    return (
-      <button className="jz-clean-exit" onClick={() => actions.toggleClean()} title="Exit clean mode (Ctrl+Shift+H)">
-        Clean mode · Ctrl+Shift+H to exit
-      </button>
-    );
-  }
-  if (cameraDrag) {
-    return (
-      <div className="jz-hints">
-        <span className="jz-hint">Move the camera · Esc hands the mouse back to the page</span>
-        <button className="jz-hint jz-hint--action" onClick={() => actions.setCameraDrag(false)}>
-          Done
-        </button>
-      </div>
-    );
-  }
-  if (tool === 'cursor' && !privacy && !frozen) return null;
-  return (
-    <div className="jz-hints">
-      {tool !== 'cursor' ? <span className="jz-hint">Tool: {tool} · Esc returns to the cursor</span> : null}
-      {privacy ? <span className="jz-hint jz-hint--danger">Privacy screen is up — press F8 to reveal</span> : null}
-      {frozen ? <span className="jz-hint">Frozen — press F9 to resume</span> : null}
-      {single ? <span className="jz-hint">Single window mode</span> : null}
-    </div>
-  );
-};
-
-function emptyBoard(tab: TabState) {
-  const name = tab.kind === 'whiteboard' ? tab.name : 'Whiteboard';
-  const id = tab.kind === 'whiteboard' ? tab.boardId : 'board_pending';
-  return {
-    schemaVersion: 1,
-    id,
-    name,
-    theme: 'dark' as const,
-    objects: [],
-    view: { x: -600, y: -400, zoom: 1 },
-    updatedAt: Date.now(),
-    rev: 0,
-  };
-}
-
 export default App;
-export { App, cardShadowCss, BackgroundLayer, cardBorderCss, computeGeometry, type Settings };
+export { App, TOP_BAR, TAB_SHELF, TOOLBAR, workspaceInsets };

@@ -45,7 +45,35 @@ export interface TimerState {
   targetMs: number;
 }
 
-export type SettingsTab = 'presentation' | 'backgrounds' | 'whiteboard' | 'tabs' | 'camera' | 'permissions' | 'about';
+export type SettingsTab = 'presentation' | 'backgrounds' | 'whiteboard' | 'tabs' | 'camera' | 'permissions' | 'browser' | 'extensions' | 'about';
+
+/** What the engine actually is. Private diagnostics, PREP only. */
+export interface CompatInfo {
+  app: string;
+  electron: string;
+  chromium: string;
+  v8: string;
+  node: string;
+  userAgent: string;
+  loadedExtensions: number;
+  approvedExtensions: number;
+  safeMode: boolean;
+  unsupported: { id: string; label: string; proprietary?: boolean; note?: string }[];
+}
+
+/** An approved extension directory reference, as the UI sees it. */
+export interface ExtensionInfo {
+  id: string;
+  path: string;
+  name: string;
+  version: string;
+  manifestVersion: number;
+  description?: string;
+  enabled: boolean;
+  status: 'loaded' | 'disabled' | 'failed' | 'unknown';
+  error?: string;
+  addedAt: number;
+}
 
 export interface UiState {
   ready: boolean;
@@ -70,6 +98,9 @@ export interface UiState {
   paletteValue: string;
   settingsOpen: boolean;
   settingsTab: SettingsTab;
+  extensionsOpen: boolean;
+  compatInfo: CompatInfo | null;
+  extensions: ExtensionInfo[];
   scenesOpen: boolean;
   notesOpen: boolean;
   notes: string;
@@ -129,6 +160,9 @@ const initialState: UiState = {
   paletteValue: '',
   settingsOpen: false,
   settingsTab: 'presentation',
+  extensionsOpen: false,
+  compatInfo: null,
+  extensions: [],
   scenesOpen: false,
   notesOpen: false,
   notes: '',
