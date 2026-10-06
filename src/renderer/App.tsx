@@ -1,595 +1,425 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React from 'react';
+import { computeGeometry, PREP_CHROME, cardBorderCss, cardShadowCss } from '../shared/layout';
+import type { LivePayload, Rect, Settings, TabState } from '../shared/types';
+import { tabLabel } from '../shared/types';
+import { BackgroundLayer, HoldingScreen, PrivacyScreen } from './live/effects';
+import { OutsideCardClip, clipStyle } from './live/mask';
+import { WhiteboardCanvas } from './whiteboard/render';
+import { WhiteboardEditor } from './whiteboard/WhiteboardEditor';
+import { Icon } from './components/Icons';
+import { Logo } from './components/Logo';
 import { Toolbar } from './components/Toolbar';
 import { Palette } from './components/Palette';
-import { SettingsPanel } from './components/Settings';
-import { AnnotationCanvas } from './annotation/AnnotationCanvas';
+import {
+  BackgroundsPanel,
+  CameraPanel,
+  ContextMenu,
+  DiagPanel,
+  InternalPage,
+  NotesPanel,
+  Onboarding,
+  PermissionDialogs,
+  ScenesPanel,
+  SettingsPanel,
+  Toasts,
+} from './components/Panels';
 import { useShortcuts } from './hooks/useShortcuts';
-import type { PresentationMode, Settings, ToolId } from '../shared/types';
-import { DEFAULT_SETTINGS } from '../shared/types';
+import { actions } from './state/actions';
+import { sel, store, useSel } from './state/store';
 
-const fileURL = (p: string) => {
-  const normalized = p.replace(/\\/g, '/');
-  return 'file:///' + encodeURI(normalized.replace(/^\//, ''));
-};
+/**
+ * PREP shell (`Juzt Prep`).
+ *
+ *   Dual   — this window is the teacher's private workspace: the active tab's
+ *            native view fills the card, the audience output lives in `Juzt Live`.
+ *   Single — this window *is* the audience output: the card renders the audience
+ *            composition, and the private pane holds the whiteboard editor and
+ *            private browsing.
+ *
+ * The renderer never positions native views: main owns geometry and tells the
+ * card rect back through `EV.GEOM`; here we only draw the frame around it.
+ */
 
 const App: React.FC = () => {
-  const [settings, setSettings] = useState<Settings>({ ...DEFAULT_SETTINGS });
-  const [mode, setMode] = useState<PresentationMode>('live');
-  const [cleanMode, setCleanMode] = useState(false);
-  const [spotlight, setSpotlight] = useState(false);
-  const [frozenImage, setFrozenImage] = useState<string | null>(null);
-  const [paletteOpen, setPaletteOpen] = useState(false);
-  const [paletteInitial, setPaletteInitial] = useState('');
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [tool, setTool] = useState<ToolId>('cursor');
-  const [color, setColor] = useState<string>(DEFAULT_SETTINGS.defaultPenColor);
-  const [size, setSize] = useState<number>(DEFAULT_SETTINGS.defaultPenSize);
-  const [opacity, setOpacity] = useState<number>(1);
-  const [toolbarCollapsed, setToolbarCollapsed] = useState(false);
-  const [isFullscreen, setIsFullscreen] = useState(false);
-  const [pageTitle, setPageTitle] = useState('');
-  const [pageURL, setPageURL] = useState('');
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [viewportRect, setViewportRect] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
-  const [histState, setHistState] = useState({ canUndo: false, canRedo: false, count: 0 });
-  const annotApiRef = useRef<{ undo: () => void; redo: () => void; clear: () => void } | null>(null);
+  const ready = useSel((s) => s.ready);
+  const settings = useSel((s) => s.settings);
+  const [viewport, setViewport] = React.useState({ w: window.innerWidth, h: window.innerHeight });
+  const [cardRect, setCardRect] = React.useState<Rect | null>(null);
 
-  const webWrapperRef = useRef<HTMLDivElement>(null);
-  const rootRef = useRef<HTMLDivElement>(null);
+  useShortcuts(ready);
 
-  // Load settings
-  useEffect(() => {
-    window.stage.getSettings().then((s) => {
-      setSettings(s);
-      setColor(s.defaultPenColor);
-      setSize(s.defaultPenSize);
-      setOpacity(1);
-      window.stage.setZoom(s.zoom).catch(() => {});
-    });
-    window.stage.isFullscreen().then(setIsFullscreen);
-    window.stage.onFullscreenChanged(setIsFullscreen);
-    window.stage.onLoadCommit(({ url }) => {
-      setPageURL(url);
-      setLoadError(null);
-    });
-    window.stage.onTitleUpdated(setPageTitle);
-    window.stage.onDidFailLoad(({ errorDescription, validatedURL }) => {
-      setLoadError(`Failed to load ${validatedURL}: ${errorDescription}`);
-    });
-    window.stage.onRendererCrashed(({ reason }) => {
-      setLoadError(`Web process crashed: ${reason}`);
-    });
-    window.stage.getURL().then(setPageURL);
-    window.stage.getTitle().then(setPageTitle);
-  }, []);
-
-  // Compute viewport bounds based on window size and ratio. Relay to main.
-  useEffect(() => {
-    const updateBounds = () => {
-      const root = rootRef.current;
-      const wrap = webWrapperRef.current;
-      if (!root || !wrap) return;
-      const w = root.clientWidth;
-      const h = root.clientHeight;
-      let vw = w;
-      let vh = h;
-      const margin = cleanMode ? 0 : 80;
-      const availW = Math.max(200, w - margin * 2);
-      const availH = Math.max(200, h - margin * 2);
-      if (settings.viewportRatio === '16:9') {
-        const r = 16 / 9;
-        if (availW / availH > r) {
-          vh = availH;
-          vw = vh * r;
-        } else {
-          vw = availW;
-          vh = vw / r;
-        }
-      } else if (settings.viewportRatio === '4:3') {
-        const r = 4 / 3;
-        if (availW / availH > r) {
-          vh = availH;
-          vw = vh * r;
-        } else {
-          vw = availW;
-          vh = vw / r;
-        }
-      } else if (settings.viewportRatio === 'portrait') {
-        const r = 3 / 4;
-        if (availW / availH > r) {
-          vh = availH;
-          vw = vh * r;
-        } else {
-          vw = availW;
-          vh = vw / r;
-        }
-      } else {
-        vw = availW;
-        vh = availH;
-      }
-      const x = (w - vw) / 2;
-      const y = (h - vh) / 2;
-      const bounds = { x, y, width: vw, height: vh };
-      setViewportRect(bounds);
-      // layout wrapper div (for annotation overlay positioning)
-      wrap.style.left = x + 'px';
-      wrap.style.top = y + 'px';
-      wrap.style.width = vw + 'px';
-      wrap.style.height = vh + 'px';
-      // relay to main so WebContentsView matches
-      window.stage.setViewport(bounds).catch(() => {});
-    };
-    updateBounds();
-    const ro = new ResizeObserver(updateBounds);
-    if (rootRef.current) ro.observe(rootRef.current);
-    window.addEventListener('resize', updateBounds);
-    return () => {
-      ro.disconnect();
-      window.removeEventListener('resize', updateBounds);
-    };
-  }, [settings.viewportRatio, cleanMode]);
-
-  const persistSettings = useCallback((patch: Partial<Settings>) => {
-    setSettings((prev) => {
-      const next = { ...prev, ...patch };
-      window.stage.setSettings(patch).catch(() => {});
-      return next;
-    });
-  }, []);
-
-  const navigate = useCallback((url: string) => {
-    window.stage.navigate(url).catch(() => {});
-  }, []);
-
-  const togglePrivacy = useCallback(() => {
-    setMode((m) => {
-      const next: PresentationMode = m === 'privacy' ? 'live' : 'privacy';
-      if (next === 'privacy' && settings.privacyMuteAudio) {
-        window.stage.setAudioMuted(true).catch(() => {});
-      } else {
-        window.stage.setAudioMuted(false).catch(() => {});
-      }
-      if (next !== 'privacy') {
-        setFrozenImage(null);
-      }
-      return next;
-    });
-  }, [settings.privacyMuteAudio]);
-
-  const toggleFreeze = useCallback(async () => {
-    if (mode === 'frozen') {
-      setMode('live');
-      setFrozenImage(null);
-      return;
-    }
-    const res = await window.stage.captureFreeze();
-    if (res.ok) {
-      setFrozenImage(res.dataUrl);
-      setMode('frozen');
-    }
-  }, [mode]);
-
-  const toggleSpotlight = useCallback(() => {
-    setSpotlight((s) => !s);
-    if (!spotlight) setTool('cursor');
-  }, [spotlight, setTool]);
-
-  const toggleClean = useCallback(() => setCleanMode((c) => !c), []);
-  const toggleFullscreen = useCallback(() => window.stage.toggleFullscreen(), []);
-
-  const openPalette = useCallback((initial = '') => {
-    setPaletteInitial(initial);
-    setPaletteOpen(true);
-  }, []);
-
-  const doCommand = useCallback(
-    (cmd: string, args: string) => {
-      switch (cmd) {
-        case 'privacy':
-          togglePrivacy();
-          break;
-        case 'freeze':
-          toggleFreeze();
-          break;
-        case 'clean':
-          toggleClean();
-          break;
-        case 'clear':
-          annotApiRef.current?.clear();
-          break;
-        case 'background':
-          pickBackground();
-          break;
-        case 'fullscreen':
-          toggleFullscreen();
-          break;
-        case 'settings':
-          setSettingsOpen(true);
-          break;
-        case 'zoom': {
-          const n = parseFloat(args);
-          if (!isNaN(n)) {
-            const f = Math.max(0.25, Math.min(5, n / 100));
-            window.stage.setZoom(f).catch(() => {});
-            persistSettings({ zoom: f });
-          }
-          break;
-        }
-        default:
-          break;
-      }
-    },
-    [togglePrivacy, toggleFreeze, toggleClean, toggleFullscreen, persistSettings],
-  );
-
-  const pickBackground = useCallback(async () => {
-    const p = await window.stage.pickBackground();
-    if (p) persistSettings({ backgroundImage: p });
-  }, [persistSettings]);
-
-  const clearBackground = useCallback(() => {
-    window.stage.clearBackground().catch(() => {});
-    persistSettings({ backgroundImage: undefined });
-  }, [persistSettings]);
-
-  // Zoom factor for tool
-  const adjustZoom = useCallback(
-    (delta: number) => {
-      setSettings((s) => {
-        const next = Math.max(0.25, Math.min(5, +(s.zoom + delta).toFixed(2)));
-        window.stage.setZoom(next).catch(() => {});
-        window.stage.setSettings({ zoom: next }).catch(() => {});
-        return { ...s, zoom: next };
+  React.useEffect(() => {
+    let pending = 0;
+    const onResize = () => {
+      if (pending) return;
+      pending = requestAnimationFrame(() => {
+        pending = 0;
+        setViewport({ w: window.innerWidth, h: window.innerHeight });
       });
-    },
-    [],
-  );
-
-  const resetZoom = useCallback(() => {
-    setSettings((s) => {
-      window.stage.setZoom(1).catch(() => {});
-      window.stage.setSettings({ zoom: 1 }).catch(() => {});
-      return { ...s, zoom: 1 };
-    });
+    };
+    window.addEventListener('resize', onResize);
+    const off = window.juzt.on.geom((geom) => setCardRect(geom.card));
+    return () => {
+      window.removeEventListener('resize', onResize);
+      if (pending) cancelAnimationFrame(pending);
+      off();
+    };
   }, []);
 
-  // Keyboard shortcuts
-  useShortcuts({
-    global: {
-      'Ctrl+l': () => {
-        openPalette(pageURL);
-      },
-      'Ctrl+Shift+q': () => {
-        window.stage.quit();
-      },
-      'Ctrl+Shift+h': () => toggleClean(),
-      'F8': () => togglePrivacy(),
-      'F9': () => toggleFreeze(),
-      'F10': () => toggleSpotlight(),
-      'F11': () => toggleFullscreen(),
-      'Ctrl+Shift+b': () => pickBackground(),
-      'Escape': () => {
-        if (paletteOpen) {
-          setPaletteOpen(false);
-          return;
-        }
-        if (settingsOpen) {
-          setSettingsOpen(false);
-          return;
-        }
-        if (spotlight) {
-          setSpotlight(false);
-          return;
-        }
-        if (mode === 'privacy') {
-          togglePrivacy();
-          return;
-        }
-        if (mode === 'frozen') {
-          toggleFreeze();
-          return;
-        }
-      },
-      'Ctrl+z': () => annotApiRef.current?.undo(),
-      'Ctrl+Shift+z': () => annotApiRef.current?.redo(),
-      'Ctrl+Shift+c': () => annotApiRef.current?.clear(),
-      'Alt+ArrowLeft': () => window.stage.goBack(),
-      'Alt+ArrowRight': () => window.stage.goForward(),
-      'Ctrl+r': () => window.stage.reload(),
-      'Ctrl+Shift+r': () => window.stage.hardReload(),
-      'Ctrl+=': () => adjustZoom(0.1),
-      'Ctrl+-': () => adjustZoom(-0.1),
-      'Ctrl+0': () => resetZoom(),
-    },
-    normal: {
-      v: () => setTool('cursor'),
-      p: () => setTool('pen'),
-      h: () => setTool('highlighter'),
-      e: () => setTool('eraser'),
-      l: () => setTool('laser'),
-      '[': () => setSize((s) => Math.max(1, s - 2)),
-      ']': () => setSize((s) => Math.min(80, s + 2)),
-    },
-  });
-
-  // When tool changes to non-cursor and spotlight is on, keep spotlight behavior (dim overlay)
-  const interactiveAnnotations = tool !== 'cursor' || spotlight;
-
-  // Title bar drag area (frameless window)
-  const onDragAreaMouseDown = (e: React.MouseEvent) => {
-    // Only enable drag on empty area
-    if (cleanMode) return;
-    if (e.target !== e.currentTarget) return;
-    // Send to main via IPC to drag? Electron supports -webkit-app-region CSS on body;
-    // but we set it via a drag region div. We need to be careful to avoid blocking clicks on toolbar.
-  };
-
-  // Background style
-  const bgStyle: React.CSSProperties = {
-    position: 'absolute',
-    inset: 0,
-    backgroundColor: settings.backgroundColor,
-    zIndex: 0,
-  };
-  const bgImgStyle: React.CSSProperties | undefined = settings.backgroundImage
-    ? {
-        position: 'absolute',
-        inset: 0,
-        backgroundImage: `url("${fileURL(settings.backgroundImage).replace(/"/g, '%22')}")`,
-        backgroundSize:
-          settings.backgroundMode === 'cover'
-            ? 'cover'
-            : settings.backgroundMode === 'contain'
-              ? 'contain'
-              : 'auto',
-        backgroundPosition: 'center',
-        backgroundRepeat: 'no-repeat',
-        zIndex: 0,
-      }
-    : undefined;
-  const dimStyle: React.CSSProperties = {
-    position: 'absolute',
-    inset: 0,
-    background: `rgba(0,0,0,${settings.backgroundDim})`,
-    zIndex: 1,
-    pointerEvents: 'none',
-  };
-
-  const showWebsite = mode === 'live' || mode === 'frozen';
+  const single = settings.presentationMode === 'single';
+  const geometry = React.useMemo(
+    () =>
+      computeGeometry({
+        single,
+        prepSize: { width: viewport.w, height: viewport.h },
+        liveSize: { width: viewport.w, height: viewport.h },
+        sizePreset: settings.sizePreset,
+        customScale: settings.customScale,
+        margin: settings.card.margin,
+        layout: settings.layout,
+        card: settings.card,
+        paneOpen: settings.prepPaneOpen,
+      }),
+    [single, viewport, settings],
+  );
+  const card = cardRect ?? (single ? geometry.live : geometry.prepCard);
 
   return (
-    <div
-      ref={rootRef}
-      style={{ position: 'relative', width: '100%', height: '100%', overflow: 'hidden', background: settings.backgroundColor }}
-    >
-      <div style={bgStyle} />
-      {bgImgStyle && <div style={bgImgStyle} onError={() => {}} />}
-      <div style={dimStyle} />
-
-      {/* Frameless drag area top strip */}
-      {!cleanMode && (
-        <div
-        style={{
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          right: 0,
-          height: 32,
-          zIndex: 9,
-          WebkitAppRegion: 'drag',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          padding: '0 12px',
-          color: 'rgba(255,255,255,0.5)',
-          fontSize: 12,
-        } as React.CSSProperties}
-      >
-          <div style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}>
-            Stage Browser{pageTitle ? ' · ' + pageTitle : ''}
-          </div>
-          <div style={{ WebkitAppRegion: 'no-drag', display: 'flex', gap: 4 } as React.CSSProperties}>
-            <WindowBtn label="—" onClick={() => window.stage.minimize()} />
-            <WindowBtn label="▢" onClick={() => window.stage.toggleMaximize()} />
-            <WindowBtn label="×" onClick={() => window.stage.close()} />
-          </div>
-        </div>
-      )}
-
-      {/* Toolbar */}
-      <Toolbar
-        visible={!cleanMode}
-        tool={tool}
-        setTool={setTool}
-        color={color}
-        onColorChosen={setColor}
-        size={size}
-        onSizeChange={setSize}
-        onUndo={() => annotApiRef.current?.undo()}
-        onRedo={() => annotApiRef.current?.redo()}
-        onClear={() => annotApiRef.current?.clear()}
-        canUndo={histState.canUndo}
-        canRedo={histState.canRedo}
-        collapsed={toolbarCollapsed}
-        onToggleCollapsed={() => setToolbarCollapsed((c) => !c)}
-      />
-
-      {/* Website wrapper (positioned by effect) */}
-      <div
-        ref={webWrapperRef}
-        style={{
-          position: 'absolute',
-          left: 0,
-          top: 0,
-          width: 1,
-          height: 1,
-          borderRadius: cleanMode ? 0 : 14,
-          overflow: 'hidden',
-          boxShadow: cleanMode ? 'none' : '0 20px 60px rgba(0,0,0,0.5)',
-          background: '#ffffff',
-          zIndex: 2,
-        }}
-        onMouseDown={onDragAreaMouseDown}
-      >
-        {/* Website is a real WebContentsView layered BELOW the renderer; so this div acts as the hole where it shows through.
-            The annotation canvas and overlays sit in this wrapper above it. */}
-        {loadError && (
-          <div
-            style={{
-              position: 'absolute',
-              inset: 0,
-              background: 'rgba(10,12,18,0.95)',
-              color: '#fff',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              flexDirection: 'column',
-              gap: 12,
-              zIndex: 6,
-              pointerEvents: 'auto',
-            }}
-          >
-            <div style={{ fontSize: 18 }}>Unable to load page</div>
-            <div style={{ color: 'rgba(255,255,255,0.6)', fontSize: 13 }}>{loadError}</div>
-            <button
-              onClick={() => window.stage.reload()}
-              style={{
-                marginTop: 8,
-                padding: '8px 16px',
-                background: 'rgba(255,255,255,0.1)',
-                border: '1px solid rgba(255,255,255,0.2)',
-                color: '#fff',
-                borderRadius: 8,
-                cursor: 'pointer',
-              }}
-            >
-              Retry
-            </button>
-          </div>
-        )}
-        {mode === 'privacy' && (
-          <div
-            style={{
-              position: 'absolute',
-              inset: 0,
-              background:
-                'linear-gradient(135deg, #1a1f2e 0%, #0b0d12 100%)',
-              color: '#fff',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              flexDirection: 'column',
-              zIndex: 8,
-              gap: 8,
-            }}
-          >
-            <div style={{ fontSize: 42, fontWeight: 600, letterSpacing: 2 }}>BRB</div>
-            <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.5)' }}>Privacy mode · Press F8 to return</div>
-          </div>
-        )}
-        {mode === 'frozen' && frozenImage && (
-          <img
-            src={frozenImage}
-            alt="frozen"
-            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'contain', zIndex: 7, pointerEvents: 'none' }}
-          />
-        )}
-        {/* Annotation canvas always mounted; interactive only when drawing mode */}
-        <AnnotationCanvas
-          interactive={interactiveAnnotations}
-          tool={tool}
-          color={color}
-          size={size}
-          opacity={opacity}
-          spotlightActive={spotlight}
-          onHistoryChange={setHistState}
-          registerUndoRedo={(api) => {
-            annotApiRef.current = api;
-          }}
-        />
-        {!showWebsite && mode !== 'privacy' && !pageURL && (
-          <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'rgba(0,0,0,0.4)', fontSize: 18, zIndex: 2 }}>
-            Press Ctrl+L to begin
-          </div>
-        )}
-      </div>
-
-      {/* Status/help line bottom */}
-      {!cleanMode && (
-        <div
-          style={{
-            position: 'absolute',
-            left: 0,
-            right: 0,
-            bottom: 8,
-            textAlign: 'center',
-            color: 'rgba(255,255,255,0.35)',
-            fontSize: 11,
-            zIndex: 9,
-            pointerEvents: 'none',
-          }}
-        >
-          Ctrl+L navigate · Alt+←/→ back/forward · V/P/H/E/L tools · F8 privacy · F9 freeze · F10 spotlight · Ctrl+Shift+B background · Ctrl+Shift+H clean mode · F11 fullscreen · Ctrl+Shift+Q quit
-        </div>
-      )}
-
-      <Palette
-        open={paletteOpen}
-        initialValue={paletteInitial}
-        onClose={() => setPaletteOpen(false)}
-        onNavigate={(url) => navigate(url)}
-        onCommand={doCommand}
-      />
-
-      <SettingsPanel
-        open={settingsOpen}
-        settings={settings}
-        onClose={() => setSettingsOpen(false)}
-        onSave={(patch) => persistSettings(patch)}
-        onPickBackground={pickBackground}
-        onClearBackground={clearBackground}
-      />
-
-      {/* subtle cursor hint */}
-      {tool !== 'cursor' && !cleanMode && (
-        <div
-          style={{
-            position: 'absolute',
-            top: 40,
-            left: '50%',
-            transform: 'translateX(-50%)',
-            padding: '6px 12px',
-            background: 'rgba(0,0,0,0.5)',
-            color: '#fff',
-            borderRadius: 8,
-            fontSize: 12,
-            zIndex: 20,
-            pointerEvents: 'none',
-          }}
-        >
-          {tool.toUpperCase()} mode · press V for cursor
-        </div>
-      )}
+    <div className={`jz-app ${single ? 'is-single' : ''} ${useSel((s) => s.cleanMode) ? 'is-clean' : ''}`}>
+      <TitleBar />
+      <TabStrip />
+      <Workspace card={card} pane={geometry.pane} single={single} />
+      <Toolbar />
+      <StatusHints />
+      <Palette />
+      <SettingsPanel />
+      <ScenesPanel />
+      <NotesPanel />
+      <CameraPanel />
+      <BackgroundsPanel />
+      <PermissionDialogs />
+      <ContextMenu />
+      <DiagPanel />
+      <Toasts />
+      <Onboarding />
     </div>
   );
 };
 
-const WindowBtn: React.FC<{ label: string; onClick: () => void }> = ({ label, onClick }) => (
-  <button
-    onClick={onClick}
-    style={{
-      width: 32,
-      height: 24,
-      background: 'transparent',
-      border: 'none',
-      color: 'rgba(255,255,255,0.7)',
-      borderRadius: 4,
-      cursor: 'pointer',
-      fontSize: 12,
-    }}
-  >
-    {label}
-  </button>
-);
+/* ------------------------------------------------------------------ *
+ * Title bar
+ * ------------------------------------------------------------------ */
+
+const TitleBar: React.FC = () => {
+  const appName = useSel((s) => s.appName);
+  const version = useSel((s) => s.version);
+  const status = useSel(sel.status);
+  const presenting = useSel((s) => !!s.live && s.live.presentation.kind !== 'holding');
+  const progress = useSel((s) => s.presentProgress);
+  const presentingLabel = useSel((s) => s.live?.presentation.label ?? '');
+  const settings = useSel((s) => s.settings);
+
+  return (
+    <header className="jz-titlebar" onDoubleClick={() => void window.juzt.window.toggleMaximize()}>
+      <div className="jz-titlebar__brand">
+        <Logo size={22} />
+        <strong>{appName}</strong>
+        <span className="jz-titlebar__version">v{version}</span>
+      </div>
+
+      <div className="jz-titlebar__center">
+        <span className={`jz-status jz-status--${status}`}>
+          {status === 'privacy' ? '◉ PRIVACY' : status === 'frozen' ? '❄ FROZEN' : status === 'live' ? '● LIVE' : '○ HOLDING'}
+        </span>
+        {presenting && presentingLabel ? <span className="jz-titlebar__label">{presentingLabel}</span> : null}
+        {progress ? <span className={`jz-progress jz-progress--${progress.stage}`}>{progress.message ?? 'Preparing the audience view…'}</span> : null}
+      </div>
+
+      <div className="jz-titlebar__actions">
+        {progress?.stage === 'error' ? (
+          <button className="jz-chip jz-chip--warn" onClick={() => void actions.retryPresent()}>
+            Retry
+          </button>
+        ) : null}
+        {presenting ? (
+          <button className="jz-chip jz-chip--danger" title="Stop presenting (Esc)" onClick={() => void actions.stopPresenting()}>
+            Stop
+          </button>
+        ) : (
+          <button className="jz-chip jz-chip--primary" title="Present this tab (Ctrl+Enter)" onClick={() => void actions.presentActive()}>
+            <Icon.broadcast size={16} /> Present
+          </button>
+        )}
+        <button
+          className="jz-chip"
+          title={settings.presentationMode === 'single' ? 'Switch to dual monitor mode' : 'Switch to single window mode'}
+          onClick={() => void actions.setSettings({ presentationMode: settings.presentationMode === 'single' ? 'dual' : 'single' })}
+        >
+          <Icon.monitor size={16} />
+          {settings.presentationMode === 'single' ? 'Single' : 'Dual'}
+        </button>
+        <button className="jz-win" title="Minimise" onClick={() => void window.juzt.window.minimize()}>
+          <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 5h8" stroke="currentColor" strokeWidth="1.4" /></svg>
+        </button>
+        <button className="jz-win" title="Maximise" onClick={() => void window.juzt.window.toggleMaximize()}>
+          <svg width="10" height="10" viewBox="0 0 10 10"><rect x="1.5" y="1.5" width="7" height="7" fill="none" stroke="currentColor" strokeWidth="1.2" /></svg>
+        </button>
+        <button className="jz-win jz-win--close" title="Close" onClick={() => void window.juzt.window.close()}>
+          <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 1l8 8M9 1l-8 8" stroke="currentColor" strokeWidth="1.3" /></svg>
+        </button>
+      </div>
+    </header>
+  );
+};
+
+/* ------------------------------------------------------------------ *
+ * Tab strip
+ * ------------------------------------------------------------------ */
+
+const TabStrip: React.FC = () => {
+  const tabs = useSel(sel.tabTitles, (a, b) => JSON.stringify(a) === JSON.stringify(b));
+  const activeId = useSel((s) => s.activeTabId);
+  const presented = useSel((s) => s.live?.presentation.label ?? null);
+  const [dragIndex, setDragIndex] = React.useState<number | null>(null);
+  const stripRef = React.useRef<HTMLDivElement>(null);
+  const [overflowOpen, setOverflowOpen] = React.useState(false);
+
+  return (
+    <nav className="jz-tabstrip" ref={stripRef}>
+      <div className="jz-tabstrip__scroll">
+        {tabs.map((tab, index) => (
+          <button
+            key={tab.id}
+            className={`jz-tab ${tab.id === activeId ? 'is-active' : ''} ${tab.pinned ? 'is-pinned' : ''} ${tab.kind === 'whiteboard' ? 'is-board' : ''}`}
+            draggable
+            onDragStart={() => setDragIndex(index)}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={() => {
+              if (dragIndex !== null && dragIndex !== index) void actions.reorderTabs(dragIndex, index);
+              setDragIndex(null);
+            }}
+            onClick={() => void actions.activateTab(tab.id)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              store.set({ contextMenu: { kind: 'tab', x: e.clientX, y: e.clientY, tabId: tab.id } });
+            }}
+            title={tab.label}
+          >
+            <span className="jz-tab__icon">
+              {tab.kind === 'whiteboard' ? (
+                <Icon.board size={18} />
+              ) : tab.favicon ? (
+                <img src={tab.favicon} alt="" width={18} height={18} />
+              ) : (
+                <Icon.globe size={18} />
+              )}
+            </span>
+            <span className="jz-tab__label">{tab.pinned ? '' : tab.label}</span>
+            {presented && presented === tab.label && tab.kind !== 'whiteboard' ? <span className="jz-tab__presenting" title="Presented" /> : null}
+            {tab.pinned ? null : (
+              <span
+                className="jz-tab__x"
+                title="Close tab (Ctrl+W)"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void actions.closeTab(tab.id);
+                }}
+              >
+                <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 1l8 8M9 1l-8 8" stroke="currentColor" strokeWidth="1.3" /></svg>
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      <div className="jz-tabstrip__actions">
+        <button className="jz-tabstrip__action" title="New tab (Ctrl+T)" onClick={() => void actions.newTab()}>
+          <Icon.plus size={18} />
+        </button>
+        <button className="jz-tabstrip__action" title="New whiteboard (Ctrl+Shift+N)" onClick={() => void actions.newWhiteboardTab()}>
+          <Icon.board size={18} />
+        </button>
+        <button
+          className="jz-tabstrip__action"
+          title="All tabs"
+          onClick={() => setOverflowOpen((v) => !v)}
+          aria-expanded={overflowOpen}
+        >
+          <Icon.chevronDown size={18} />
+        </button>
+      </div>
+
+      {overflowOpen ? (
+        <div className="jz-menu jz-menu--tabs">
+          {tabs.map((tab, index) => (
+            <button
+              key={tab.id}
+              className={tab.id === activeId ? 'is-active' : ''}
+              onClick={() => {
+                void actions.activateTab(tab.id);
+                setOverflowOpen(false);
+              }}
+            >
+              <span className="jz-menu__index">{index + 1 > 9 ? '' : index + 1}</span>
+              <span className="jz-menu__label">{tab.label}</span>
+              {tab.favicon ? <img src={tab.favicon} alt="" width={16} height={16} /> : null}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </nav>
+  );
+};
+
+/* ------------------------------------------------------------------ *
+ * Workspace + card
+ * ------------------------------------------------------------------ */
+
+const Workspace: React.FC<{ card: Rect; pane: Rect | null; single: boolean }> = ({ card, pane, single }) => {
+  const tab = useSel(sel.activeTab);
+  const live = useSel((s) => s.live);
+  const boardDoc = useSel(sel.activeBoard);
+  const presentingBoard = useSel((s) => s.live?.presentation.boardId ?? null);
+  const boardShown = useSel((s) => s.live?.presentation.kind === 'whiteboard');
+  const clean = useSel((s) => s.cleanMode);
+  const settings = useSel((s) => s.settings);
+  const [size, setSize] = React.useState({ w: window.innerWidth, h: window.innerHeight });
+
+  React.useEffect(() => {
+    const onResize = () => setSize({ w: window.innerWidth, h: window.innerHeight });
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  const radius = Math.max(0, settings.card.radius);
+  const border = cardBorderCss(settings.card.border);
+  const shadow = cardShadowCss(settings.card.shadow);
+  const internal = tab && tab.kind === 'web' && tab.url.startsWith('juzt://') ? tab.url : null;
+  const boardForCard = single && boardShown ? boardDoc : null;
+
+  return (
+    <main className="jz-workspace" style={{ paddingTop: PREP_CHROME.top - 8 }}>
+      <div
+        className="jz-card"
+        style={{
+          left: card.x,
+          top: card.y,
+          width: card.width,
+          height: card.height,
+          borderRadius: radius,
+          boxShadow: shadow,
+          border: border.width > 0 ? `${border.width}px solid ${border.color}` : undefined,
+        }}
+      >
+        {/* The native website view (if any) sits exactly here, above this DOM. */}
+        {tab && tab.kind === 'whiteboard' && !single ? <WhiteboardEditor doc={boardDoc ?? emptyBoard(tab)} /> : null}
+        {tab && tab.kind === 'whiteboard' && single && boardShown && !boardDoc ? <div className="jz-card__empty">Loading board…</div> : null}
+        {internal ? <InternalPage url={internal} /> : null}
+        {single ? <SingleAudience live={live} card={{ x: 0, y: 0, width: card.width, height: card.height }} size={{ w: card.width, h: card.height }} /> : null}
+        {!tab ? <div className="jz-card__empty">Open a tab to get started</div> : null}
+      </div>
+
+      {single && pane ? <PrepPane pane={pane} activeTab={tab} board={boardForCard} /> : null}
+      {!clean ? null : null}
+    </main>
+  );
+};
+
+/** Single mode: the DOM copy of the audience composition (visible when no native view covers it). */
+const SingleAudience: React.FC<{ live: LivePayload | null; card: Rect; size: { w: number; h: number } }> = ({ live, card, size }) => {
+  if (!live) return null;
+  const presenting = live.presentation.kind !== 'holding';
+  const showingBoard = live.presentation.kind === 'whiteboard';
+  const boardDoc = useSel((s) => (showingBoard && live.presentation.boardId ? s.boardDocs[live.presentation.boardId] : undefined));
+  const radius = Math.max(0, live.surface.card.radius);
+  const outsideId = 'jz-prep-outside';
+
+  return (
+    <div className="jz-audience">
+      <div className="jz-audience__bg" style={clipStyle(outsideId)}>
+        <OutsideCardClip id={outsideId} local={{ w: size.w, h: size.h }} card={{ x: 0, y: 0, width: size.w, height: size.h }} radius={0} />
+      </div>
+      {showingBoard && boardDoc ? (
+        <div className="jz-audience__board" style={{ borderRadius: radius }}>
+          <WhiteboardCanvas doc={boardDoc} size={{ w: size.w, h: size.h }} />
+        </div>
+      ) : null}
+      {live.flags.privacy ? <PrivacyScreen live={live} size={{ w: size.w, h: size.h }} /> : null}
+      {!presenting ? <HoldingScreen live={live} size={{ w: size.w, h: size.h }} /> : null}
+      <span className="jz-audience__hint">{presenting ? 'Audience output' : 'Holding screen — press Ctrl+Enter to present'}</span>
+    </div>
+  );
+};
+
+/** Private pane (single mode): whiteboard editor, private browsing hint, notes. */
+const PrepPane: React.FC<{ pane: Rect; activeTab: TabState | null; board: import('../shared/types').WhiteboardDoc | null }> = ({ pane, activeTab, board }) => {
+  const name = activeTab ? tabLabel(activeTab) : 'Private pane';
+  return (
+    <aside className="jz-pane" style={{ left: pane.x, top: pane.y, width: pane.width, height: pane.height }}>
+      <header className="jz-pane__head">
+        <span>{activeTab && activeTab.kind === 'whiteboard' ? 'Editing' : 'Private'}</span>
+        <strong>{name}</strong>
+      </header>
+      <div className="jz-pane__body">
+        {board ? <WhiteboardEditor doc={board} /> : <p className="jz-pane__hint">This pane is private — the audience never sees it. Open a whiteboard tab (Ctrl+Shift+N) to edit here.</p>}
+      </div>
+    </aside>
+  );
+};
+
+/* ------------------------------------------------------------------ *
+ * Status hints (only while relevant — never permanent help text)
+ * ------------------------------------------------------------------ */
+
+const StatusHints: React.FC = () => {
+  const tool = useSel((s) => s.tool);
+  const clean = useSel((s) => s.cleanMode);
+  const cameraDrag = useSel((s) => s.cameraDrag);
+  const privacy = useSel((s) => s.live?.flags.privacy ?? false);
+  const frozen = useSel((s) => s.live?.flags.frozen ?? false);
+  const single = useSel((s) => s.settings.presentationMode === 'single');
+  if (clean) {
+    return (
+      <button className="jz-clean-exit" onClick={() => actions.toggleClean()} title="Exit clean mode (Ctrl+Shift+H)">
+        Clean mode · Ctrl+Shift+H to exit
+      </button>
+    );
+  }
+  if (cameraDrag) {
+    return (
+      <div className="jz-hints">
+        <span className="jz-hint">Move the camera · Esc hands the mouse back to the page</span>
+        <button className="jz-hint jz-hint--action" onClick={() => actions.setCameraDrag(false)}>
+          Done
+        </button>
+      </div>
+    );
+  }
+  if (tool === 'cursor' && !privacy && !frozen) return null;
+  return (
+    <div className="jz-hints">
+      {tool !== 'cursor' ? <span className="jz-hint">Tool: {tool} · Esc returns to the cursor</span> : null}
+      {privacy ? <span className="jz-hint jz-hint--danger">Privacy screen is up — press F8 to reveal</span> : null}
+      {frozen ? <span className="jz-hint">Frozen — press F9 to resume</span> : null}
+      {single ? <span className="jz-hint">Single window mode</span> : null}
+    </div>
+  );
+};
+
+function emptyBoard(tab: TabState) {
+  const name = tab.kind === 'whiteboard' ? tab.name : 'Whiteboard';
+  const id = tab.kind === 'whiteboard' ? tab.boardId : 'board_pending';
+  return {
+    schemaVersion: 1,
+    id,
+    name,
+    theme: 'dark' as const,
+    objects: [],
+    view: { x: -600, y: -400, zoom: 1 },
+    updatedAt: Date.now(),
+    rev: 0,
+  };
+}
 
 export default App;
+export { App, cardShadowCss, BackgroundLayer, cardBorderCss, computeGeometry, type Settings };

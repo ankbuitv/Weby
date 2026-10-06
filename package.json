@@ -1,9 +1,9 @@
 {
-  "name": "stage-browser",
+  "name": "juzt",
   "version": "1.0.0",
-  "description": "Stage Browser - Presentation browser for teaching, livestreaming, and OBS",
+  "description": "Juzt — a calm teaching browser: private prep on one side, a clean audience output on the other",
   "main": "dist/main/index.js",
-  "author": "Stage Browser",
+  "author": "Juzt",
   "license": "MIT",
   "scripts": {
     "dev": "concurrently -k -n vite,electron -c blue,green \"npm:dev:renderer\" \"npm:dev:electron\"",
@@ -13,9 +13,11 @@
     "build:renderer": "vite build",
     "build:main": "tsc -p tsconfig.main.json",
     "typecheck": "tsc --noEmit -p tsconfig.main.json && tsc --noEmit -p tsconfig.renderer.json",
-    "dist": "npm run build && electron-builder --win --x64",
-    "dist:linux": "npm run build && electron-builder --linux",
-    "pack": "npm run build && electron-builder --dir"
+    "dist": "npm run build && electron-builder --win --x64 --publish never",
+    "dist:linux": "npm run build && electron-builder --linux --publish never",
+    "pack": "npm run build && electron-builder --dir",
+    "test": "tsc -p tsconfig.test.json && node --test test/*.test.mjs",
+    "icons": "node scripts/gen-icon.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",
@@ -34,9 +36,9 @@
     "wait-on": "^7.2.0"
   },
   "build": {
-    "appId": "com.stagebrowser.app",
-    "productName": "Stage Browser",
-    "executableName": "StageBrowser",
+    "appId": "com.juzt.app",
+    "productName": "Juzt",
+    "executableName": "Juzt",
     "files": [
       "dist/**/*",
       "package.json"
@@ -47,21 +49,39 @@
     },
     "win": {
       "target": [
-        { "target": "nsis", "arch": ["x64"] },
-        { "target": "portable", "arch": ["x64"] },
-        { "target": "dir", "arch": ["x64"] }
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "dir",
+          "arch": [
+            "x64"
+          ]
+        }
       ],
       "sign": false,
-      "signingHashAlgorithms": []
+      "signingHashAlgorithms": [],
+      "icon": "build/icon.ico"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "artifactName": "Stage Browser Setup ${version}.${ext}"
+      "artifactName": "Juzt Setup ${version}.${ext}",
+      "shortcutName": "Juzt"
     },
     "portable": {
-      "artifactName": "Stage Browser Portable ${version}.${ext}"
+      "artifactName": "Juzt Portable ${version}.${ext}"
     },
-    "forceCodeSigning": false
+    "forceCodeSigning": false,
+    "publish": null
   }
 }

@@ -1,283 +1,308 @@
 import React from 'react';
-import type { ToolId } from '../../shared/types';
+import type { ToolId, WbTool } from '../../shared/types';
+import { WHITEBOARD_THEMES } from '../../shared/types';
+import { actions } from '../state/actions';
+import { sel, store, useSel } from '../state/store';
+import { Icon } from './Icons';
 
-interface ToolDef {
-  id: ToolId;
-  label: string;
-  shortcut?: string;
-  icon: React.ReactNode;
-}
+/**
+ * The floating toolbar.
+ *
+ * Design rule from the V2 direction: stay out of the way. One 44px column, one
+ * flyout at a time, big colour grids and sliders live behind "…" so the default
+ * surface stays minimal.
+ */
 
-const TOOLS: ToolDef[] = [
-  {
-    id: 'cursor',
-    label: 'Cursor',
-    shortcut: 'V',
-    icon: (
-      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M5 3l14 7-6 2-2 6z" />
-      </svg>
-    ),
-  },
-  {
-    id: 'pen',
-    label: 'Pen',
-    shortcut: 'P',
-    icon: (
-      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M12 19l7-7 3 3-7 7-3-3z" />
-        <path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z" />
-        <path d="M2 2l7.586 7.586" />
-        <circle cx="11" cy="11" r="2" />
-      </svg>
-    ),
-  },
-  {
-    id: 'marker',
-    label: 'Marker',
-    icon: (
-      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M9 11l-6 6v3h3l6-6" />
-        <path d="M14 6l4 4-8 8-4-4z" />
-      </svg>
-    ),
-  },
-  {
-    id: 'highlighter',
-    label: 'Highlighter',
-    shortcut: 'H',
-    icon: (
-      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M3 21l4-1 12-12-3-3L4 17l-1 4z" />
-        <path d="M14 6l4 4" />
-      </svg>
-    ),
-  },
-  {
-    id: 'eraser',
-    label: 'Eraser',
-    shortcut: 'E',
-    icon: (
-      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M20 20H8l-5-5 10-10 7 7-6 6" />
-        <path d="M10 14l5-5" />
-      </svg>
-    ),
-  },
-  { id: 'line', label: 'Line', icon: <svg viewBox="0 0 24 24" width="22" height="22"><line x1="4" y1="20" x2="20" y2="4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg> },
-  {
-    id: 'arrow',
-    label: 'Arrow',
-    icon: (
-      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <line x1="5" y1="19" x2="19" y2="5" />
-        <polyline points="9 5 19 5 19 15" />
-      </svg>
-    ),
-  },
-  {
-    id: 'rect',
-    label: 'Rectangle',
-    icon: <svg viewBox="0 0 24 24" width="22" height="22"><rect x="4" y="5" width="16" height="14" fill="none" stroke="currentColor" strokeWidth="2" rx="1" /></svg>,
-  },
-  {
-    id: 'ellipse',
-    label: 'Ellipse',
-    icon: <svg viewBox="0 0 24 24" width="22" height="22"><ellipse cx="12" cy="12" rx="9" ry="6" fill="none" stroke="currentColor" strokeWidth="2" /></svg>,
-  },
-  {
-    id: 'text',
-    label: 'Text',
-    icon: (
-      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M5 5h14" />
-        <path d="M12 5v14" />
-        <path d="M9 19h6" />
-      </svg>
-    ),
-  },
-  {
-    id: 'laser',
-    label: 'Laser',
-    shortcut: 'L',
-    icon: (
-      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <circle cx="12" cy="12" r="2" fill="currentColor" />
-        <path d="M12 2v4M12 18v4M2 12h4M18 12h4" />
-      </svg>
-    ),
-  },
-  {
-    id: 'spotlight',
-    label: 'Spotlight',
-    icon: (
-      <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M8 10a4 4 0 118 0l-2 8h-4z" />
-        <path d="M6 21h12" />
-      </svg>
-    ),
-  },
+const WEB_TOOLS: { id: ToolId; label: string; key: string }[] = [
+  { id: 'cursor', label: 'Cursor', key: 'V' },
+  { id: 'pen', label: 'Pen', key: 'P' },
+  { id: 'marker', label: 'Marker', key: 'M' },
+  { id: 'highlighter', label: 'Highlighter', key: 'H' },
+  { id: 'eraser', label: 'Eraser', key: 'E' },
+  { id: 'laser', label: 'Laser', key: 'L' },
+  { id: 'text', label: 'Text', key: 'T' },
+  { id: 'number', label: 'Number stamp', key: 'N' },
+  { id: 'spotlight', label: 'Spotlight', key: 'S' },
 ];
 
-interface Props {
-  visible: boolean;
-  tool: ToolId;
-  setTool: (t: ToolId) => void;
-  color: string;
-  onColorChosen: (c: string) => void;
-  size: number;
-  onSizeChange: (n: number) => void;
-  onUndo: () => void;
-  onRedo: () => void;
-  onClear: () => void;
-  canUndo: boolean;
-  canRedo: boolean;
-  collapsed: boolean;
-  onToggleCollapsed: () => void;
-}
+const BOARD_TOOLS: { id: WbTool; label: string; key: string }[] = [
+  { id: 'select', label: 'Select', key: 'V' },
+  { id: 'hand', label: 'Hand', key: 'H' },
+  { id: 'pen', label: 'Pen', key: 'P' },
+  { id: 'marker', label: 'Marker', key: 'M' },
+  { id: 'highlighter', label: 'Highlighter', key: 'G' },
+  { id: 'eraser', label: 'Eraser', key: 'E' },
+  { id: 'line', label: 'Line', key: 'L' },
+  { id: 'arrow', label: 'Arrow', key: 'A' },
+  { id: 'rect', label: 'Rectangle', key: 'R' },
+  { id: 'ellipse', label: 'Ellipse', key: 'O' },
+  { id: 'text', label: 'Text', key: 'T' },
+  { id: 'number', label: 'Number', key: 'N' },
+  { id: 'laser', label: 'Laser', key: 'X' },
+];
 
-const COLORS = ['#ff3b30', '#ff9500', '#ffcc00', '#34c759', '#00c7be', '#007aff', '#af52de', '#ff2d55', '#ffffff', '#000000'];
+const SWATCHES = ['#ff5c5c', '#ffd166', '#5bd67e', '#4aa3ff', '#c084fc', '#ffffff', '#0b0e14'];
 
-export const Toolbar: React.FC<Props> = ({
-  visible,
-  tool,
-  setTool,
-  color,
-  onColorChosen,
-  size,
-  onSizeChange,
-  onUndo,
-  onRedo,
-  onClear,
-  canUndo,
-  canRedo,
-  collapsed,
-  onToggleCollapsed,
-}) => {
-  if (!visible) return null;
+export const Toolbar: React.FC = () => {
+  const onBoard = useSel((s) => !!sel.activeBoardId(s));
+  return <div className="jz-toolbar">{onBoard ? <BoardTools /> : <WebTools />}</div>;
+};
+
+/* ------------------------------------------------------------------ *
+ * Website annotation tools
+ * ------------------------------------------------------------------ */
+
+const WebTools: React.FC = () => {
+  const tool = useSel((s) => s.tool);
+  const ink = useSel((s) => s.ink);
+  const flags = useSel(
+    (s) => ({
+      privacy: !!s.live?.flags.privacy,
+      frozen: !!s.live?.flags.frozen,
+      spotlight: !!s.live?.flags.spotlight,
+      clean: s.cleanMode,
+      masks: s.masks.length,
+    }),
+    (a, b) => JSON.stringify(a) === JSON.stringify(b),
+  );
+  const canUndo = useSel((s) => s.canUndoInk);
+  const canRedo = useSel((s) => s.canRedoInk);
+  const [flyout, setFlyout] = React.useState<'none' | 'ink' | 'more'>('none');
+  const [advanced, setAdvanced] = React.useState(false);
+
   return (
-    <div
-      style={{
-        position: 'absolute',
-        left: 12,
-        top: '50%',
-        transform: 'translateY(-50%)',
-        zIndex: 10,
-        background: 'rgba(20,22,30,0.78)',
-        backdropFilter: 'blur(16px)',
-        border: '1px solid rgba(255,255,255,0.08)',
-        borderRadius: 14,
-        padding: 8,
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 4,
-        boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
-        transition: 'opacity 0.2s',
-        maxHeight: 'calc(100vh - 40px)',
-        overflowY: 'auto',
-      }}
-      onClick={(e) => e.stopPropagation()}
-    >
-      <button
-        title={collapsed ? 'Expand toolbar' : 'Collapse toolbar'}
-        onClick={onToggleCollapsed}
-        style={{
-          background: 'transparent',
-          border: 'none',
-          color: 'rgba(255,255,255,0.6)',
-          cursor: 'pointer',
-          padding: 6,
-          borderRadius: 8,
-        }}
-      >
-        {collapsed ? '»' : '«'}
-      </button>
-      {!collapsed && (
-        <>
-          {TOOLS.map((t) => (
-            <button
-              key={t.id}
-              title={t.shortcut ? `${t.label} (${t.shortcut})` : t.label}
-              onClick={() => setTool(t.id)}
-              style={{
-                background: tool === t.id ? 'rgba(255,255,255,0.16)' : 'transparent',
-                border: 'none',
-                color: tool === t.id ? '#fff' : 'rgba(255,255,255,0.75)',
-                width: 40,
-                height: 40,
-                borderRadius: 10,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                cursor: 'pointer',
-                transition: 'background 0.15s',
-              }}
-              onMouseDown={(e) => e.preventDefault()}
-            >
-              {t.icon}
-            </button>
-          ))}
-          <div style={{ height: 1, background: 'rgba(255,255,255,0.1)', margin: '4px 0' }} />
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', gap: 4, padding: 4 }}>
-            {COLORS.map((c) => (
+    <>
+      <div className="jz-toolbar__group">
+        {WEB_TOOLS.map((t) => (
+          <button
+            key={t.id}
+            className={`jz-tool ${tool === t.id ? 'is-active' : ''}`}
+            title={`${t.label} (${t.key})`}
+            aria-pressed={tool === t.id}
+            onClick={() => {
+              actions.setTool(t.id);
+              setFlyout(t.id === 'pen' || t.id === 'marker' || t.id === 'highlighter' || t.id === 'text' || t.id === 'number' ? 'ink' : 'none');
+            }}
+          >
+            {React.createElement(Icon[t.id] ?? Icon.pen, { size: 20 })}
+          </button>
+        ))}
+      </div>
+
+      <div className="jz-toolbar__group">
+        <button className={`jz-tool ${flyout === 'ink' ? 'is-open' : ''}`} title="Ink style" onClick={() => setFlyout(flyout === 'ink' ? 'none' : 'ink')}>
+          <span className="jz-swatch" style={{ background: ink.color }} />
+        </button>
+        <button className={`jz-tool ${canUndo ? '' : 'is-disabled'}`} title="Undo annotation (Ctrl+Z)" onClick={() => actions.inkCommand('undo')} disabled={!canUndo}>
+          {React.createElement(Icon.undo, { size: 20 })}
+        </button>
+        <button className={`jz-tool ${canRedo ? '' : 'is-disabled'}`} title="Redo annotation (Ctrl+Shift+Z)" onClick={() => actions.inkCommand('redo')} disabled={!canRedo}>
+          {React.createElement(Icon.redo, { size: 20 })}
+        </button>
+        <button className="jz-tool" title="Clear annotations" onClick={() => actions.inkCommand('clear')}>
+          {React.createElement(Icon.trash, { size: 20 })}
+        </button>
+      </div>
+
+      <div className="jz-toolbar__group">
+        <button
+          className={`jz-tool ${flags.privacy ? 'is-active is-danger' : ''}`}
+          title="Privacy screen (F8)"
+          onClick={() => void actions.togglePrivacy()}
+        >
+          {React.createElement(Icon.eyeOff, { size: 20 })}
+        </button>
+        <button className={`jz-tool ${flags.frozen ? 'is-active' : ''}`} title="Freeze the audience view (F9)" onClick={() => void actions.toggleFreeze()}>
+          {React.createElement(Icon.snowflake, { size: 20 })}
+        </button>
+        <button className={`jz-tool ${flags.spotlight ? 'is-active' : ''}`} title="Spotlight (F10)" onClick={() => void actions.toggleSpotlight()}>
+          {React.createElement(Icon.spotlight, { size: 20 })}
+        </button>
+        <button className={`jz-tool ${flags.masks ? 'is-active' : ''}`} title="Privacy masks" onClick={() => void actions.addMask('solid')}>
+          {React.createElement(Icon.mask, { size: 20 })}
+        </button>
+      </div>
+
+      <div className="jz-toolbar__group">
+        <button className={`jz-tool ${flyout === 'more' ? 'is-open' : ''}`} title="More" onClick={() => setFlyout(flyout === 'more' ? 'none' : 'more')}>
+          {React.createElement(Icon.menu, { size: 20 })}
+        </button>
+      </div>
+
+      {flyout === 'ink' ? (
+        <div className="jz-flyout jz-flyout--ink">
+          <div className="jz-flyout__row">
+            {SWATCHES.map((c) => (
               <button
                 key={c}
+                className={`jz-swatch-btn ${ink.color.toLowerCase() === c.toLowerCase() ? 'is-active' : ''}`}
+                style={{ background: c }}
                 title={c}
-                onClick={() => onColorChosen(c)}
-                style={{
-                  width: 20,
-                  height: 20,
-                  borderRadius: 4,
-                  background: c,
-                  border: color === c ? '2px solid #fff' : '1px solid rgba(255,255,255,0.2)',
-                  cursor: 'pointer',
-                  padding: 0,
-                }}
+                onClick={() => actions.setInk({ color: c })}
               />
             ))}
+          </div>
+          <label className="jz-flyout__slider">
+            <span>Size</span>
             <input
-              type="color"
-              value={color}
-              onChange={(e) => onColorChosen(e.target.value)}
-              title="Custom color"
-              style={{ width: 20, height: 20, border: 'none', padding: 0, background: 'transparent', cursor: 'pointer' }}
+              type="range"
+              min={1}
+              max={40}
+              value={ink.size}
+              onChange={(e) => actions.setInk({ size: Number(e.target.value) })}
             />
-          </div>
-          <div style={{ padding: '4px 6px', color: 'rgba(255,255,255,0.7)', fontSize: 11 }}>
-            Size: {size}px
-          </div>
-          <input
-            type="range"
-            min={1}
-            max={60}
-            value={size}
-            onChange={(e) => onSizeChange(Number(e.target.value))}
-            style={{ width: 40, margin: '0 auto' }}
-          />
-          <div style={{ height: 1, background: 'rgba(255,255,255,0.1)', margin: '4px 0' }} />
-          <button title="Undo (Ctrl+Z)" onClick={onUndo} disabled={!canUndo}
-            style={toolBtnStyle(!canUndo)}>↶</button>
-          <button title="Redo (Ctrl+Shift+Z)" onClick={onRedo} disabled={!canRedo}
-            style={toolBtnStyle(!canRedo)}>↷</button>
-          <button title="Clear (Ctrl+Shift+C)" onClick={onClear} style={toolBtnStyle(false)}>✕</button>
-        </>
-      )}
-    </div>
+            <em>{ink.size}</em>
+          </label>
+          {advanced ? (
+            <>
+              <label className="jz-flyout__slider">
+                <span>Opacity</span>
+                <input type="range" min={0.15} max={1} step={0.05} value={ink.opacity} onChange={(e) => actions.setInk({ opacity: Number(e.target.value) })} />
+                <em>{Math.round(ink.opacity * 100)}%</em>
+              </label>
+              <label className="jz-flyout__slider">
+                <span>Text</span>
+                <input type="range" min={14} max={120} step={2} value={ink.fontSize} onChange={(e) => actions.setInk({ fontSize: Number(e.target.value) })} />
+                <em>{ink.fontSize}</em>
+              </label>
+              <div className="jz-flyout__row">
+                <input type="color" value={ink.color} onChange={(e) => actions.setInk({ color: e.target.value })} />
+              </div>
+            </>
+          ) : (
+            <button className="jz-flyout__more" onClick={() => setAdvanced(true)}>
+              More options…
+            </button>
+          )}
+        </div>
+      ) : null}
+
+      {flyout === 'more' ? (
+        <div className="jz-flyout jz-flyout--more">
+          <button onClick={() => void actions.setHolding(true)}>
+            <Icon.broadcast size={16} /> Holding screen
+          </button>
+          <button onClick={() => store.set({ scenesOpen: true })}>
+            <Icon.layers size={16} /> Scenes
+          </button>
+          <button onClick={() => store.set({ notesOpen: true })}>
+            <Icon.notes size={16} /> Notes &amp; timer
+          </button>
+          <button onClick={() => store.set({ cameraOpen: true })}>
+            <Icon.camera size={16} /> Camera
+          </button>
+          <button onClick={() => actions.openSettings('backgrounds')}>
+            <Icon.image size={16} /> Backgrounds
+          </button>
+          <button onClick={() => actions.openSettings('presentation')}>
+            <Icon.settings size={16} /> Settings
+          </button>
+          <button className={flags.clean ? 'is-active' : ''} onClick={() => actions.toggleClean()}>
+            <Icon.eyeOff size={16} /> Clean mode (Ctrl+Shift+H)
+          </button>
+          <button
+            onClick={() => {
+              void actions.setPreview(!store.getState().previewEnabled);
+            }}
+          >
+            <Icon.monitor size={16} /> Live preview
+          </button>
+        </div>
+      ) : null}
+    </>
   );
 };
 
-function toolBtnStyle(disabled: boolean): React.CSSProperties {
-  return {
-    background: 'transparent',
-    border: 'none',
-    color: disabled ? 'rgba(255,255,255,0.25)' : 'rgba(255,255,255,0.85)',
-    width: 40,
-    height: 36,
-    borderRadius: 8,
-    cursor: disabled ? 'default' : 'pointer',
-    fontSize: 18,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-  };
-}
+/* ------------------------------------------------------------------ *
+ * Whiteboard tools
+ * ------------------------------------------------------------------ */
+
+const BoardTools: React.FC = () => {
+  const boardId = useSel(sel.activeBoardId);
+  const doc = useSel(sel.activeBoard);
+  const tool = useSel((s) => s.wbTool);
+  const style = useSel((s) => s.wbStyle);
+  const canUndo = useSel((s) => s.wbCanUndo);
+  const canRedo = useSel((s) => s.wbCanRedo);
+  const [flyout, setFlyout] = React.useState<'none' | 'ink' | 'more'>('none');
+
+  return (
+    <>
+      <div className="jz-toolbar__group">
+        {BOARD_TOOLS.map((t) => (
+          <button key={t.id} className={`jz-tool ${tool === t.id ? 'is-active' : ''}`} title={`${t.label} (${t.key})`} onClick={() => actions.setWbTool(t.id)}>
+            {React.createElement(Icon[t.id] ?? Icon.pen, { size: 20 })}
+          </button>
+        ))}
+      </div>
+
+      <div className="jz-toolbar__group">
+        <button className={`jz-tool ${flyout === 'ink' ? 'is-open' : ''}`} title="Colour & size" onClick={() => setFlyout(flyout === 'ink' ? 'none' : 'ink')}>
+          <span className="jz-swatch" style={{ background: style.color }} />
+        </button>
+        <button className={`jz-tool ${canUndo ? '' : 'is-disabled'}`} title="Undo (Ctrl+Z)" disabled={!canUndo} onClick={() => void actions.wbUndo(boardId)}>
+          {React.createElement(Icon.undo, { size: 20 })}
+        </button>
+        <button className={`jz-tool ${canRedo ? '' : 'is-disabled'}`} title="Redo (Ctrl+Shift+Z)" disabled={!canRedo} onClick={() => void actions.wbRedo(boardId)}>
+          {React.createElement(Icon.redo, { size: 20 })}
+        </button>
+        <button className={`jz-tool ${flyout === 'more' ? 'is-open' : ''}`} title="More" onClick={() => setFlyout(flyout === 'more' ? 'none' : 'more')}>
+          {React.createElement(Icon.menu, { size: 20 })}
+        </button>
+      </div>
+
+      {flyout === 'ink' ? (
+        <div className="jz-flyout jz-flyout--ink">
+          <div className="jz-flyout__row">
+            {SWATCHES.map((c) => (
+              <button
+                key={c}
+                className={`jz-swatch-btn ${style.color.toLowerCase() === c.toLowerCase() ? 'is-active' : ''}`}
+                style={{ background: c }}
+                onClick={() => actions.setWbStyle({ color: c })}
+              />
+            ))}
+          </div>
+          <label className="jz-flyout__slider">
+            <span>Size</span>
+            <input type="range" min={1} max={40} value={style.width ?? style.size} onChange={(e) => actions.setWbStyle({ width: Number(e.target.value), size: Number(e.target.value) })} />
+            <em>{style.width ?? style.size}</em>
+          </label>
+          <div className="jz-flyout__row jz-flyout__row--themes">
+            {WHITEBOARD_THEMES.map((t) => (
+              <button
+                key={t.id}
+                className={`jz-theme ${doc?.theme === t.id ? 'is-active' : ''}`}
+                style={{ background: t.background, color: t.ink }}
+                title={t.label}
+                onClick={() => boardId && void actions.wbSetTheme(boardId, t.id)}
+              >
+                Aa
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {flyout === 'more' ? (
+        <div className="jz-flyout jz-flyout--more">
+          <button onClick={() => boardId && void actions.wbInsertImage(boardId)}>
+            <Icon.image size={16} /> Insert image
+          </button>
+          <button onClick={() => boardId && void actions.wbExport(boardId, 'all')}>
+            <Icon.expand size={16} /> Export PNG
+          </button>
+          <button onClick={() => boardId && void actions.wbExport(boardId, 'view')}>
+            <Icon.image size={16} /> Export current view
+          </button>
+          <button onClick={() => boardId && void actions.presentBoard(boardId)}>
+            <Icon.broadcast size={16} /> Present this board (Ctrl+Enter)
+          </button>
+          <button className="is-danger" onClick={() => boardId && void actions.wbClear(boardId)}>
+            <Icon.trash size={16} /> Clear board
+          </button>
+        </div>
+      ) : null}
+    </>
+  );
+};
