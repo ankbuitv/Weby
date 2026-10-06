@@ -146,6 +146,21 @@ Settings → Browser panel lists them with their real state.
 - Safe Mode pauses every loaded extension for website tabs and resets the
   identity to the default, **without deleting** the approved list or per‑site
   overrides. Available as `> safe mode` and in Settings.
+- **Toolbar action popups are not available.** Chromium exposes extensions to
+  Electron as a subset of the API — content scripts, background pages, storage
+  and messaging work, but Electron has no concept of an extension's toolbar
+  button. An extension that puts its whole interface in an `action` /
+  `browserAction` popup will load and do nothing visible. Juzt does not fake a
+  popup button; an options page declared in the manifest is opened directly.
+  This is stated in Settings → Extensions rather than discovered mid-lesson.
+- Settings → Extensions carries a **Performance** section with the live loaded
+  count and "Disable all extensions temporarily", which drops the loaded
+  instances and keeps the configuration. GPU acceleration is never disabled to
+  paper over extension lag.
+- Known interaction: Juzt rewrites request headers in its own network stack to
+  keep the User-Agent and client hints consistent. An extension that also uses
+  `chrome.webRequest` is subject to the limitation every Electron app has — the
+  two interception layers do not observe each other's changes.
 - No online catalog or backend exists. The architecture (a persisted list of
   approved directory references reloaded on startup, each failure isolated) is
   what a future catalog would plug into.

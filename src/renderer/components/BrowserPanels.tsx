@@ -236,8 +236,21 @@ export const ExtensionsPanel: React.FC = () => {
 
       <div className="jz-seg jz-seg--wrap">
         <button onClick={() => void actions.pickExtension()}>Load Unpacked…</button>
+      </div>
+
+      <h4>Performance</h4>
+      <p className="jz-note">
+        {list.length === 0
+          ? 'No extensions are loaded, so nothing is adding cost to website tabs.'
+          : `${list.filter((e) => e.status === 'loaded').length} extension${list.filter((e) => e.status === 'loaded').length === 1 ? '' : 's'} loaded into the website session. Each one adds a content-script and background-process cost to every page you open.`}
+      </p>
+      <div className="jz-seg jz-seg--wrap">
         <button onClick={() => void actions.disableAllExtensions()}>Disable all extensions temporarily</button>
       </div>
+      <p className="jz-note">
+        This drops the loaded instances only — your approved list and every per-site setting are kept. Juzt does not diagnose
+        extension lag by turning off GPU acceleration globally.
+      </p>
 
       <form
         className="jz-inline"
@@ -328,6 +341,20 @@ export const ExtensionsPanel: React.FC = () => {
           );
         })}
       </ul>
+
+      <h4>What Juzt cannot do</h4>
+      <p className="jz-note">
+        <b>Toolbar action popups are not available.</b> Chromium exposes extensions to Electron as a subset of the API — content
+        scripts, background pages, storage and messaging work, but Electron has no concept of an extension&rsquo;s toolbar button,
+        so an extension that puts its whole interface in an <code>action</code>/<code>browserAction</code> popup will load and do
+        nothing visible. Juzt does not fake a popup button for it. An options page declared in the manifest is opened directly
+        instead.
+      </p>
+      <p className="jz-note">
+        Juzt rewrites request headers in its own network stack to keep the User-Agent and client hints consistent. An extension
+        that also uses <code>chrome.webRequest</code> is subject to the same limitation every Electron app has: the two
+        interception layers do not see each other&rsquo;s changes.
+      </p>
 
       <h4>Where extensions run</h4>
       <p className="jz-note">
