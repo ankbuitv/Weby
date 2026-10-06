@@ -9,22 +9,100 @@
 import { CARD_RADII } from './types';
 import type { CameraConfig, CardAppearance, CardMargin, CardRadius, LayoutId, Rect, Size, SizePreset } from './types';
 
-export interface CardRectOpts {
-  size: SizePreset;
-  /** Inset from the window edge, in CSS pixels. */
-  safeInset: number;
-  /** Overall scale for the `custom` preset (0.4..1). */
-  customScale: number;
-  margin: CardMargin;
-  layout: LayoutId;
-  /** Region reserved for the camera in classroom/tutor layouts. */
-  cameraReserve: number;
+/* ------------------------------------------------------------------ *
+ * V2 chrome — the ONE place every rectangle is derived from.
+ *
+ * main uses this to place the native WebContentsViews, the PREP DOM uses
+ * the same numbers to draw the card frame / toolbar / tab shelf, and the
+ * tests assert the invariants. Nothing downstream may hard-code a chrome
+ * pixel: if a number appears twice, it is wrong.
+ * ------------------------------------------------------------------ */
+
+/** Compact floating vertical teaching toolbar. */
+export const TOOLBAR = {
+  width: 56,
+  radius: 18,
+  /** Distance from the left window edge. */
+  offsetLeft: 16,
+  /** Breathing room between the toolbar and the card. */
+  gap: 24,
+} as const;
+
+/** Tiny floating drag/brand strip. Never a full-width application header. */
+export const TOP_BAR = { height: 36 } as const;
+
+/** Tab shelf: readable but lightweight, and collapsed away when unused. */
+export const TAB_SHELF = {
+  height: 44,
+  gap: 10,
+  width: 208,
+  minWidth: 158,
+  maxWidth: 240,
+} as const;
+
+/**
+ * Card insets of the default (V2) workspace.
+ *
+ *   left  = toolbar offset + toolbar width + gap
+ *   top   = top strip, plus the tab shelf when it is showing
+ *   right / bottom = the calm outer margin
+ */
+export const CARD_INSETS = {
+  topWithShelf: 80,
+  topNoShelf: 44,
+  right: 34,
+  bottom: 38,
+  left: TOOLBAR.offsetLeft + TOOLBAR.width + TOOLBAR.gap,
+} as const;
+
+export interface WorkspaceInsets {
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
 }
 
-export const SIZE_PRESETS: { id: SizePreset; label: string; ratio?: number; fill: number }[] = [
-  { id: 'comfortable', label: 'Comfortable', ratio: 16 / 9, fill: 0.82 },
-  { id: 'large', label: 'Large', ratio: 16 / 9, fill: 0.94 },
-  { id: 'full', label: 'Full', fill: 1 },
+/** Card insets for a given workspace state (the only source of truth). */
+export function workspaceInsets(shelfVisible: boolean): WorkspaceInsets {
+  return {
+    top: shelfVisible ? CARD_INSETS.topWithShelf : CARD_INSETS.topNoShelf,
+    right: CARD_INSETS.right,
+    bottom: CARD_INSETS.bottom,
+    left: CARD_INSETS.left,
+  };
+}
+
+/** True when the tab shelf should be on screen at all. */
+export function shelfVisible(tabCount: number, always: boolean): boolean {
+  return always || tabCount > 1;
+}
+
+/* ------------------------------------------------------------------ *
+ * Presets / margins
+ * ------------------------------------------------------------------ */
+
+export interface SizePresetDef {
+  id: SizePreset;
+  label: string;
+  /** Fixed aspect ratio; omitted means "fill the workspace". */
+  ratio?: number;
+  /** Fraction of the available region the card occupies. */
+  fill: number;
+  /** `full` drops the outer margin and takes the whole usable surface. */
+  tight?: boolean;
+}
+
+/**
+ * Size presets.
+ *
+ * The default (`comfortable`) deliberately has **no** aspect constraint: the
+ * website is the lesson, and a forced 16:9 box leaves exactly the giant dead
+ * bands this restoration is meant to remove.
+ */
+export const SIZE_PRESETS: SizePresetDef[] = [
+  { id: 'comfortable', label: 'Comfortable', fill: 0.92 },
+  { id: 'large', label: 'Large', fill: 1 },
+  { id: 'full', label: 'Full', fill: 1, tight: true },
   { id: '16:9', label: '16:9', ratio: 16 / 9, fill: 0.96 },
   { id: '4:3', label: '4:3', ratio: 4 / 3, fill: 0.96 },
   { id: 'portrait', label: 'Portrait', ratio: 9 / 16, fill: 0.94 },
@@ -46,6 +124,18 @@ export function roundRect(r: Rect): Rect {
   };
 }
 
+export interface CardRectOpts {
+  size: SizePreset;
+  /** Inset from the window edge, in CSS pixels. */
+  safeInset: number;
+  /** Overall scale for the `custom` preset (0.4..1). */
+  customScale: number;
+  margin: CardMargin;
+  layout: LayoutId;
+  /** Region reserved for the camera in classroom/tutor layouts. */
+  cameraReserve: number;
+}
+
 /**
  * Rect equality used to skip a `setBounds` call.
  *
@@ -61,8 +151,8 @@ export function sameRect(a: Rect | null | undefined, b: Rect | null | undefined)
 }
 
 /**
- * The content region inside the LIVE surface, after margins and any camera
- * strip reserved by the layout.
+ * The content region inside a surface, after margins and any camera strip
+ * reserved by the layout.
  */
 export function contentRegion(surface: Size, opts: CardRectOpts): Rect {
   const inset = Math.max(MARGINS[opts.margin], opts.safeInset);
@@ -101,33 +191,48 @@ export function fitRatio(region: Rect, ratio: number, fill: number): Rect {
   };
 }
 
+/** Fill a fraction of the region, centred — used by the ratio-free presets. */
+export function fitFill(region: Rect, fill: number): Rect {
+  const width = region.width * fill;
+  const height = region.height * fill;
+  return {
+    x: region.x + (region.width - width) / 2,
+    y: region.y + (region.height - height) / 2,
+    width,
+    height,
+  };
+}
+
 /**
- * Main entry point — the card rectangle for a given surface.
+ * Card rectangle inside an already-inset region.
+ *
+ * Split out from `computeCardRect` so the V2 workspace can inset the window
+ * with `workspaceInsets()` and then apply the size preset exactly once — no
+ * double margins, no second opinion about where the card goes.
  */
-export function computeCardRect(surface: Size, opts: CardRectOpts): Rect {
-  if (surface.width < 2 || surface.height < 2) return { x: 0, y: 0, width: 1, height: 1 };
-  const region = contentRegion(surface, opts);
-  if (region.width < 8 || region.height < 8) return roundRect({ x: 0, y: 0, width: surface.width, height: surface.height });
+export function cardRectInRegion(region: Rect, opts: CardRectOpts): Rect {
+  if (region.width < 8 || region.height < 8) {
+    return roundRect({ x: 0, y: 0, width: Math.max(1, region.width), height: Math.max(1, region.height) });
+  }
 
   const preset = SIZE_PRESETS.find((p) => p.id === opts.size) ?? SIZE_PRESETS[0];
 
   if (opts.size === 'custom') {
     const fill = clamp(opts.customScale, 0.4, 1);
-    const target = { width: region.width * fill, height: region.height * fill };
-    return roundRect({
-      x: region.x + (region.width - target.width) / 2,
-      y: region.y + (region.height - target.height) / 2,
-      width: target.width,
-      height: target.height,
-    });
+    return roundRect(fitFill(region, fill));
   }
 
-  if (!preset.ratio) {
-    // `full` — fill the whole content region (no aspect constraint).
-    return roundRect(region);
-  }
+  if (!preset.ratio) return roundRect(fitFill(region, preset.fill));
 
   return roundRect(fitRatio(region, preset.ratio, preset.fill));
+}
+
+/**
+ * Main entry point — the card rectangle for a given surface.
+ */
+export function computeCardRect(surface: Size, opts: CardRectOpts): Rect {
+  if (surface.width < 2 || surface.height < 2) return { x: 0, y: 0, width: 1, height: 1 };
+  return cardRectInRegion(contentRegion(surface, opts), opts);
 }
 
 /**
@@ -183,19 +288,10 @@ export function fitSize(natural: Size, box: Size, mode: 'cover' | 'contain' | 's
   return { width: natural.width * scale, height: natural.height * scale };
 }
 
-/** Split a window between the private prep pane and the audience card. */
-export function splitPanes(surface: Size, paneWidth: number): { live: Rect; pane: Rect | null } {
-  if (paneWidth <= 0) return { live: { x: 0, y: 0, ...surface }, pane: null };
-  const pane: Rect = { x: Math.max(0, surface.width - paneWidth), y: 0, width: paneWidth, height: surface.height };
-  return { live: { x: 0, y: 0, width: Math.max(120, surface.width - paneWidth), height: surface.height }, pane };
-}
-
 /* ------------------------------------------------------------------ *
  * Whole-window geometry (identical in main and both renderers)
  * ------------------------------------------------------------------ */
 
-/** Chrome reserved by the PREP UI around the private card. */
-export const PREP_CHROME = { top: 96, left: 78, right: 20, bottom: 24 } as const;
 export const PANE_MIN_WIDTH = 360;
 export const PANE_MAX_FRACTION = 0.45;
 
@@ -210,17 +306,16 @@ export interface SurfaceGeometry {
   overlay: Rect | null;
   /** True when the audience surface is the PREP window itself. */
   single: boolean;
-}
-
-function inset(size: Size, insets: { top: number; left: number; right: number; bottom: number }): Size {
-  return { width: Math.max(160, size.width - insets.left - insets.right), height: Math.max(120, size.height - insets.top - insets.bottom) };
+  /** Insets that produced `live` — the renderer mirrors them in CSS. */
+  insets: WorkspaceInsets;
 }
 
 /**
- * Every rect the app needs, derived only from (window size, settings).
- *
- * Both processes call this with the same inputs, which is what removes the
- * resize IPC round-trip (and the re-layout storms that came with it in V2).
+ * Every rect the app needs, derived only from (window size, settings, tab
+ * count). Both processes call this with the same inputs, which is what removes
+ * the resize IPC round-trip (and the re-layout storms that came with it in V2)
+ * and what keeps the native view glued to the DOM card frame through startup,
+ * resize, maximise, fullscreen and the tab shelf appearing or disappearing.
  */
 export function computeGeometry(opts: {
   single: boolean;
@@ -232,6 +327,8 @@ export function computeGeometry(opts: {
   layout: LayoutId;
   card: CardAppearance;
   paneOpen: boolean;
+  /** True when the compact tab shelf occupies the strip above the card. */
+  shelfVisible?: boolean;
 }): SurfaceGeometry {
   const cardOpts = (size: Size, extra = 0): CardRectOpts => ({
     size: opts.sizePreset,
@@ -242,27 +339,55 @@ export function computeGeometry(opts: {
     cameraReserve: opts.layout === 'classroom' ? 140 : 320,
   });
 
+  const shelf = opts.shelfVisible ?? true;
+
   if (opts.single) {
-    const paneWidth = opts.paneOpen ? clamp(Math.round(opts.prepSize.width * 0.36), PANE_MIN_WIDTH, Math.round(opts.prepSize.width * PANE_MAX_FRACTION)) : 0;
-    const panes = splitPanes(opts.prepSize, paneWidth);
-    const live = computeCardRect(panes.live, { ...cardOpts(panes.live), safeInset: 12 });
-    const pane = panes.pane
-      ? { x: panes.pane.x - 8, y: PREP_CHROME.top, width: panes.pane.width - 8, height: Math.max(200, panes.pane.height - PREP_CHROME.top - 12) }
-      : null;
-    return { live, prepCard: live, pane, overlay: live, single: true };
+    const insets = workspaceInsets(shelf);
+    const paneWidth = opts.paneOpen
+      ? clamp(Math.round(opts.prepSize.width * 0.36), PANE_MIN_WIDTH, Math.round(opts.prepSize.width * PANE_MAX_FRACTION))
+      : 0;
+    const region: Rect = {
+      x: insets.left,
+      y: insets.top,
+      width: Math.max(160, opts.prepSize.width - insets.left - insets.right - paneWidth),
+      height: Math.max(120, opts.prepSize.height - insets.top - insets.bottom),
+    };
+    // The workspace is already inset by `workspaceInsets`; the preset scales it
+    // from there (margin/safeInset are deliberately 0 so nothing is counted twice).
+    const live = cardRectInRegion(region, { ...cardOpts(opts.prepSize), margin: 'compact', safeInset: 0 });
+    const pane =
+      paneWidth > 0
+        ? {
+            x: Math.max(0, opts.prepSize.width - paneWidth),
+            y: TOP_BAR.height,
+            width: paneWidth,
+            height: Math.max(200, opts.prepSize.height - TOP_BAR.height - 8),
+          }
+        : null;
+    return { live, prepCard: live, pane, overlay: live, single: true, insets };
   }
 
-  const prepSize = inset(opts.prepSize, { top: PREP_CHROME.top, left: PREP_CHROME.left, right: PREP_CHROME.right, bottom: PREP_CHROME.bottom });
-  const prepCard = computeCardRect(prepSize, cardOpts(prepSize));
+  const insets = workspaceInsets(shelf);
+  const prepRegion: Rect = {
+    x: insets.left,
+    y: insets.top,
+    width: Math.max(160, opts.prepSize.width - insets.left - insets.right),
+    height: Math.max(120, opts.prepSize.height - insets.top - insets.bottom),
+  };
+  const prepCard = offsetRect(computeCardRect({ width: prepRegion.width, height: prepRegion.height }, cardOpts(prepRegion)), prepRegion);
   const live = computeCardRect(opts.liveSize, { ...cardOpts(opts.liveSize), safeInset: 18 });
-  return { live, prepCard, pane: null, overlay: prepCard, single: false };
+  return { live, prepCard, pane: null, overlay: prepCard, single: false, insets };
+}
+
+function offsetRect(rect: Rect, by: { x: number; y: number }): Rect {
+  return { ...rect, x: rect.x + by.x, y: rect.y + by.y };
 }
 
 /** The private pane rect only (single mode helper for the renderer's DOM). */
 export function computePaneRect(prepSize: Size, open: boolean): Rect | null {
   if (!open) return null;
   const width = clamp(Math.round(prepSize.width * 0.36), PANE_MIN_WIDTH, Math.round(prepSize.width * PANE_MAX_FRACTION));
-  return { x: prepSize.width - width, y: 0, width, height: prepSize.height };
+  return { x: Math.max(0, prepSize.width - width), y: TOP_BAR.height, width, height: Math.max(200, prepSize.height - TOP_BAR.height - 8) };
 }
 
 export function isCardRadius(value: unknown): value is CardRadius {

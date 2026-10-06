@@ -6,28 +6,39 @@ import { sel, store, useSel } from '../state/store';
 import { Icon } from './Icons';
 
 /**
- * The floating toolbar.
+ * The floating teaching toolbar — V2 shape.
  *
- * Design rule from the V2 direction: stay out of the way. One 44px column, one
- * flyout at a time, big colour grids and sliders live behind "…" so the default
- * surface stays minimal.
+ * Design rules taken straight from the approved reference:
+ *   • one compact vertical column, 54–60px wide, 16–20px radius;
+ *   • Cursor, Pen, Marker, Eraser, Shapes, Text, Number, Laser;
+ *   • separator, then Undo / Redo, then More;
+ *   • colour / size / opacity / shape options appear ONLY in a small popover
+ *     when the teacher asks for them — the toolbar is never a control panel.
  */
 
-const WEB_TOOLS: { id: ToolId; label: string; key: string }[] = [
+/** Website annotation tools. Shapes/Text/Number open their own popover. */
+const WEB_TOOLS: { id: ToolId; label: string; key: string; popover?: 'ink' | 'shapes' | 'text' }[] = [
   { id: 'cursor', label: 'Cursor', key: 'V' },
-  { id: 'pen', label: 'Pen', key: 'P' },
-  { id: 'marker', label: 'Marker', key: 'M' },
-  { id: 'highlighter', label: 'Highlighter', key: 'H' },
+  { id: 'pen', label: 'Pen', key: 'P', popover: 'ink' },
+  { id: 'marker', label: 'Marker', key: 'M', popover: 'ink' },
+  { id: 'highlighter', label: 'Highlighter', key: 'H', popover: 'ink' },
   { id: 'eraser', label: 'Eraser', key: 'E' },
+  { id: 'line', label: 'Shapes', key: 'I', popover: 'shapes' },
+  { id: 'text', label: 'Text', key: 'T', popover: 'text' },
+  { id: 'number', label: 'Number stamp', key: 'N', popover: 'text' },
   { id: 'laser', label: 'Laser', key: 'L' },
-  { id: 'text', label: 'Text', key: 'T' },
-  { id: 'number', label: 'Number stamp', key: 'N' },
   { id: 'spotlight', label: 'Spotlight', key: 'S' },
+];
+
+const SHAPE_TOOLS: { id: ToolId; label: string }[] = [
+  { id: 'line', label: 'Line' },
+  { id: 'arrow', label: 'Arrow' },
+  { id: 'rect', label: 'Rectangle' },
+  { id: 'ellipse', label: 'Ellipse' },
 ];
 
 const BOARD_TOOLS: { id: WbTool; label: string; key: string }[] = [
   { id: 'select', label: 'Select', key: 'V' },
-  { id: 'hand', label: 'Hand', key: 'H' },
   { id: 'pen', label: 'Pen', key: 'P' },
   { id: 'marker', label: 'Marker', key: 'M' },
   { id: 'highlighter', label: 'Highlighter', key: 'G' },
@@ -43,9 +54,15 @@ const BOARD_TOOLS: { id: WbTool; label: string; key: string }[] = [
 
 const SWATCHES = ['#ff5c5c', '#ffd166', '#5bd67e', '#4aa3ff', '#c084fc', '#ffffff', '#0b0e14'];
 
+type Popover = 'none' | 'ink' | 'shapes' | 'text' | 'more';
+
 export const Toolbar: React.FC = () => {
   const onBoard = useSel((s) => !!sel.activeBoardId(s));
-  return <div className="jz-toolbar">{onBoard ? <BoardTools /> : <WebTools />}</div>;
+  return (
+    <div className="jz-toolbar" role="toolbar" aria-label="Teaching tools">
+      {onBoard ? <BoardTools /> : <WebTools />}
+    </div>
+  );
 };
 
 /* ------------------------------------------------------------------ *
@@ -61,14 +78,14 @@ const WebTools: React.FC = () => {
       frozen: !!s.live?.flags.frozen,
       spotlight: !!s.live?.flags.spotlight,
       clean: s.cleanMode,
-      masks: s.masks.length,
     }),
     (a, b) => JSON.stringify(a) === JSON.stringify(b),
   );
   const canUndo = useSel((s) => s.canUndoInk);
   const canRedo = useSel((s) => s.canRedoInk);
-  const [flyout, setFlyout] = React.useState<'none' | 'ink' | 'more'>('none');
-  const [advanced, setAdvanced] = React.useState(false);
+  const [popover, setPopover] = React.useState<Popover>('none');
+
+  const close = () => setPopover('none');
 
   return (
     <>
@@ -79,139 +96,169 @@ const WebTools: React.FC = () => {
             className={`jz-tool ${tool === t.id ? 'is-active' : ''}`}
             title={`${t.label} (${t.key})`}
             aria-pressed={tool === t.id}
+            aria-label={t.label}
             onClick={() => {
               actions.setTool(t.id);
-              setFlyout(t.id === 'pen' || t.id === 'marker' || t.id === 'highlighter' || t.id === 'text' || t.id === 'number' ? 'ink' : 'none');
+              setPopover(t.popover && t.popover !== 'ink' ? t.popover : t.popover === 'ink' ? 'ink' : 'none');
             }}
           >
-            {React.createElement(Icon[t.id] ?? Icon.pen, { size: 20 })}
+            {React.createElement(Icon[t.id] ?? Icon.pen, { size: 19 })}
           </button>
         ))}
       </div>
 
       <div className="jz-toolbar__group">
-        <button className={`jz-tool ${flyout === 'ink' ? 'is-open' : ''}`} title="Ink style" onClick={() => setFlyout(flyout === 'ink' ? 'none' : 'ink')}>
+        <button
+          className={`jz-tool ${popover === 'ink' ? 'is-open' : ''}`}
+          title="Colour & size"
+          aria-label="Colour and size"
+          onClick={() => setPopover(popover === 'ink' ? 'none' : 'ink')}
+        >
           <span className="jz-swatch" style={{ background: ink.color }} />
         </button>
-        <button className={`jz-tool ${canUndo ? '' : 'is-disabled'}`} title="Undo annotation (Ctrl+Z)" onClick={() => actions.inkCommand('undo')} disabled={!canUndo}>
-          {React.createElement(Icon.undo, { size: 20 })}
+        <button className={`jz-tool ${canUndo ? '' : 'is-disabled'}`} title="Undo annotation (Ctrl+Z)" aria-label="Undo" onClick={() => actions.inkCommand('undo')} disabled={!canUndo}>
+          {React.createElement(Icon.undo, { size: 19 })}
         </button>
-        <button className={`jz-tool ${canRedo ? '' : 'is-disabled'}`} title="Redo annotation (Ctrl+Shift+Z)" onClick={() => actions.inkCommand('redo')} disabled={!canRedo}>
-          {React.createElement(Icon.redo, { size: 20 })}
-        </button>
-        <button className="jz-tool" title="Clear annotations" onClick={() => actions.inkCommand('clear')}>
-          {React.createElement(Icon.trash, { size: 20 })}
+        <button className={`jz-tool ${canRedo ? '' : 'is-disabled'}`} title="Redo annotation (Ctrl+Shift+Z)" aria-label="Redo" onClick={() => actions.inkCommand('redo')} disabled={!canRedo}>
+          {React.createElement(Icon.redo, { size: 19 })}
         </button>
       </div>
 
       <div className="jz-toolbar__group">
         <button
-          className={`jz-tool ${flags.privacy ? 'is-active is-danger' : ''}`}
-          title="Privacy screen (F8)"
-          onClick={() => void actions.togglePrivacy()}
+          className={`jz-tool ${popover === 'more' ? 'is-open' : ''}`}
+          title="More"
+          aria-label="More"
+          onClick={() => setPopover(popover === 'more' ? 'none' : 'more')}
         >
-          {React.createElement(Icon.eyeOff, { size: 20 })}
-        </button>
-        <button className={`jz-tool ${flags.frozen ? 'is-active' : ''}`} title="Freeze the audience view (F9)" onClick={() => void actions.toggleFreeze()}>
-          {React.createElement(Icon.snowflake, { size: 20 })}
-        </button>
-        <button className={`jz-tool ${flags.spotlight ? 'is-active' : ''}`} title="Spotlight (F10)" onClick={() => void actions.toggleSpotlight()}>
-          {React.createElement(Icon.spotlight, { size: 20 })}
-        </button>
-        <button className={`jz-tool ${flags.masks ? 'is-active' : ''}`} title="Privacy masks" onClick={() => void actions.addMask('solid')}>
-          {React.createElement(Icon.mask, { size: 20 })}
+          {React.createElement(Icon.menu, { size: 19 })}
         </button>
       </div>
 
-      <div className="jz-toolbar__group">
-        <button className={`jz-tool ${flyout === 'more' ? 'is-open' : ''}`} title="More" onClick={() => setFlyout(flyout === 'more' ? 'none' : 'more')}>
-          {React.createElement(Icon.menu, { size: 20 })}
-        </button>
-      </div>
-
-      {flyout === 'ink' ? (
-        <div className="jz-flyout jz-flyout--ink">
-          <div className="jz-flyout__row">
-            {SWATCHES.map((c) => (
-              <button
-                key={c}
-                className={`jz-swatch-btn ${ink.color.toLowerCase() === c.toLowerCase() ? 'is-active' : ''}`}
-                style={{ background: c }}
-                title={c}
-                onClick={() => actions.setInk({ color: c })}
-              />
-            ))}
-          </div>
-          <label className="jz-flyout__slider">
-            <span>Size</span>
-            <input
-              type="range"
-              min={1}
-              max={40}
-              value={ink.size}
-              onChange={(e) => actions.setInk({ size: Number(e.target.value) })}
-            />
-            <em>{ink.size}</em>
-          </label>
-          {advanced ? (
-            <>
-              <label className="jz-flyout__slider">
-                <span>Opacity</span>
-                <input type="range" min={0.15} max={1} step={0.05} value={ink.opacity} onChange={(e) => actions.setInk({ opacity: Number(e.target.value) })} />
-                <em>{Math.round(ink.opacity * 100)}%</em>
-              </label>
-              <label className="jz-flyout__slider">
-                <span>Text</span>
-                <input type="range" min={14} max={120} step={2} value={ink.fontSize} onChange={(e) => actions.setInk({ fontSize: Number(e.target.value) })} />
-                <em>{ink.fontSize}</em>
-              </label>
-              <div className="jz-flyout__row">
-                <input type="color" value={ink.color} onChange={(e) => actions.setInk({ color: e.target.value })} />
-              </div>
-            </>
-          ) : (
-            <button className="jz-flyout__more" onClick={() => setAdvanced(true)}>
-              More options…
-            </button>
-          )}
-        </div>
-      ) : null}
-
-      {flyout === 'more' ? (
-        <div className="jz-flyout jz-flyout--more">
-          <button onClick={() => void actions.setHolding(true)}>
-            <Icon.broadcast size={16} /> Holding screen
-          </button>
-          <button onClick={() => store.set({ scenesOpen: true })}>
-            <Icon.layers size={16} /> Scenes
-          </button>
-          <button onClick={() => store.set({ notesOpen: true })}>
-            <Icon.notes size={16} /> Notes &amp; timer
-          </button>
-          <button onClick={() => store.set({ cameraOpen: true })}>
-            <Icon.camera size={16} /> Camera
-          </button>
-          <button onClick={() => actions.openSettings('backgrounds')}>
-            <Icon.image size={16} /> Backgrounds
-          </button>
-          <button onClick={() => actions.openSettings('presentation')}>
-            <Icon.settings size={16} /> Settings
-          </button>
-          <button className={flags.clean ? 'is-active' : ''} onClick={() => actions.toggleClean()}>
-            <Icon.eyeOff size={16} /> Clean mode (Ctrl+Shift+H)
-          </button>
-          <button
-            onClick={() => {
-              void actions.setPreview(!store.getState().previewEnabled);
-            }}
-          >
-            <Icon.monitor size={16} /> Live preview
-          </button>
-        </div>
-      ) : null}
+      {popover === 'ink' ? <InkPopover ink={ink} onClose={close} /> : null}
+      {popover === 'shapes' ? <ShapesPopover onPick={close} /> : null}
+      {popover === 'text' ? <TextPopover ink={ink} onClose={close} /> : null}
+      {popover === 'more' ? <MorePopover flags={flags} onClose={close} /> : null}
     </>
   );
 };
+
+/* ------------------------------------------------------------------ *
+ * Popovers — only ever open on demand
+ * ------------------------------------------------------------------ */
+
+const InkPopover: React.FC<{ ink: { color: string; size: number; opacity: number; fontSize: number }; onClose: () => void }> = ({ ink, onClose }) => (
+  <PopoverShell title="Ink" onClose={onClose}>
+    <div className="jz-flyout__row">
+      {SWATCHES.map((c) => (
+        <button
+          key={c}
+          className={`jz-swatch-btn ${ink.color.toLowerCase() === c.toLowerCase() ? 'is-active' : ''}`}
+          style={{ background: c }}
+          title={c}
+          onClick={() => actions.setInk({ color: c })}
+        />
+      ))}
+    </div>
+    <label className="jz-flyout__slider">
+      <span>Size</span>
+      <input type="range" min={1} max={40} value={ink.size} onChange={(e) => actions.setInk({ size: Number(e.target.value) })} />
+      <em>{ink.size}</em>
+    </label>
+    <details className="jz-flyout__details">
+      <summary>More options…</summary>
+      <label className="jz-flyout__slider">
+        <span>Opacity</span>
+        <input type="range" min={0.15} max={1} step={0.05} value={ink.opacity} onChange={(e) => actions.setInk({ opacity: Number(e.target.value) })} />
+        <em>{Math.round(ink.opacity * 100)}%</em>
+      </label>
+      <label className="jz-flyout__slider">
+        <span>Text</span>
+        <input type="range" min={14} max={120} step={2} value={ink.fontSize} onChange={(e) => actions.setInk({ fontSize: Number(e.target.value) })} />
+        <em>{ink.fontSize}</em>
+      </label>
+      <div className="jz-flyout__row">
+        <input type="color" value={ink.color} onChange={(e) => actions.setInk({ color: e.target.value })} aria-label="Custom colour" />
+      </div>
+    </details>
+  </PopoverShell>
+);
+
+const ShapesPopover: React.FC<{ onPick: () => void }> = ({ onPick }) => (
+  <PopoverShell title="Shapes">
+    <div className="jz-flyout__grid">
+      {SHAPE_TOOLS.map((s) => (
+        <button key={s.id} className="jz-flyout__tile" title={s.label} onClick={() => { actions.setTool(s.id); onPick(); }}>
+          {React.createElement(Icon[s.id], { size: 20 })}
+          <em>{s.label}</em>
+        </button>
+      ))}
+    </div>
+  </PopoverShell>
+);
+
+const TextPopover: React.FC<{ ink: { color: string; fontSize: number }; onClose: () => void }> = ({ ink, onClose }) => (
+  <PopoverShell title="Text" onClose={onClose}>
+    <div className="jz-flyout__row">
+      {SWATCHES.slice(0, 6).map((c) => (
+        <button
+          key={c}
+          className={`jz-swatch-btn ${ink.color.toLowerCase() === c.toLowerCase() ? 'is-active' : ''}`}
+          style={{ background: c }}
+          title={c}
+          onClick={() => actions.setInk({ color: c })}
+        />
+      ))}
+    </div>
+    <label className="jz-flyout__slider">
+      <span>Size</span>
+      <input type="range" min={14} max={120} step={2} value={ink.fontSize} onChange={(e) => actions.setInk({ fontSize: Number(e.target.value) })} />
+      <em>{ink.fontSize}</em>
+    </label>
+  </PopoverShell>
+);
+
+const MorePopover: React.FC<{ flags: { privacy: boolean; frozen: boolean; spotlight: boolean; clean: boolean }; onClose: () => void }> = ({ flags, onClose }) => (
+  <PopoverShell title="More" onClose={onClose}>
+    <button onClick={() => { void actions.setHolding(true); onClose(); }}>
+      <Icon.broadcast size={15} /> Holding screen
+    </button>
+    <button onClick={() => { store.set({ scenesOpen: true }); onClose(); }}>
+      <Icon.layers size={15} /> Scenes
+    </button>
+    <button onClick={() => { store.set({ notesOpen: true }); onClose(); }}>
+      <Icon.notes size={15} /> Notes &amp; timer
+    </button>
+    <button onClick={() => { store.set({ cameraOpen: true }); onClose(); }}>
+      <Icon.camera size={15} /> Camera
+    </button>
+    <button onClick={() => { actions.openSettings('backgrounds'); onClose(); }}>
+      <Icon.image size={15} /> Background
+    </button>
+    <button onClick={() => { actions.openSettings('presentation'); onClose(); }}>
+      <Icon.settings size={15} /> Settings
+    </button>
+    <button className={flags.clean ? 'is-active' : ''} onClick={() => { actions.toggleClean(); onClose(); }}>
+      <Icon.eyeOff size={15} /> Clean mode
+    </button>
+  </PopoverShell>
+);
+
+const PopoverShell: React.FC<{ title: string; onClose?: () => void; children: React.ReactNode }> = ({ title, onClose, children }) => (
+  <div className="jz-flyout" role="dialog" aria-label={title}>
+    <div className="jz-flyout__head">
+      <strong>{title}</strong>
+      {onClose ? (
+        <button className="jz-flyout__x" title="Close" aria-label="Close" onClick={onClose}>
+          <svg width="10" height="10" viewBox="0 0 10 10">
+            <path d="M1 1l8 8M9 1l-8 8" stroke="currentColor" strokeWidth="1.3" />
+          </svg>
+        </button>
+      ) : null}
+    </div>
+    {children}
+  </div>
+);
 
 /* ------------------------------------------------------------------ *
  * Whiteboard tools
@@ -224,41 +271,55 @@ const BoardTools: React.FC = () => {
   const style = useSel((s) => s.wbStyle);
   const canUndo = useSel((s) => s.wbCanUndo);
   const canRedo = useSel((s) => s.wbCanRedo);
-  const [flyout, setFlyout] = React.useState<'none' | 'ink' | 'more'>('none');
+  const [popover, setPopover] = React.useState<Popover>('none');
 
   return (
     <>
       <div className="jz-toolbar__group">
         {BOARD_TOOLS.map((t) => (
-          <button key={t.id} className={`jz-tool ${tool === t.id ? 'is-active' : ''}`} title={`${t.label} (${t.key})`} onClick={() => actions.setWbTool(t.id)}>
-            {React.createElement(Icon[t.id] ?? Icon.pen, { size: 20 })}
+          <button key={t.id} className={`jz-tool ${tool === t.id ? 'is-active' : ''}`} title={`${t.label} (${t.key})`} aria-label={t.label} onClick={() => actions.setWbTool(t.id)}>
+            {React.createElement(Icon[t.id] ?? Icon.pen, { size: 19 })}
           </button>
         ))}
       </div>
 
       <div className="jz-toolbar__group">
-        <button className={`jz-tool ${flyout === 'ink' ? 'is-open' : ''}`} title="Colour & size" onClick={() => setFlyout(flyout === 'ink' ? 'none' : 'ink')}>
+        <button
+          className={`jz-tool ${popover === 'ink' ? 'is-open' : ''}`}
+          title="Colour & size"
+          aria-label="Colour and size"
+          onClick={() => setPopover(popover === 'ink' ? 'none' : 'ink')}
+        >
           <span className="jz-swatch" style={{ background: style.color }} />
         </button>
-        <button className={`jz-tool ${canUndo ? '' : 'is-disabled'}`} title="Undo (Ctrl+Z)" disabled={!canUndo} onClick={() => void actions.wbUndo(boardId)}>
-          {React.createElement(Icon.undo, { size: 20 })}
+        <button className={`jz-tool ${canUndo ? '' : 'is-disabled'}`} title="Undo (Ctrl+Z)" aria-label="Undo" onClick={() => void actions.wbUndo()} disabled={!canUndo}>
+          {React.createElement(Icon.undo, { size: 19 })}
         </button>
-        <button className={`jz-tool ${canRedo ? '' : 'is-disabled'}`} title="Redo (Ctrl+Shift+Z)" disabled={!canRedo} onClick={() => void actions.wbRedo(boardId)}>
-          {React.createElement(Icon.redo, { size: 20 })}
-        </button>
-        <button className={`jz-tool ${flyout === 'more' ? 'is-open' : ''}`} title="More" onClick={() => setFlyout(flyout === 'more' ? 'none' : 'more')}>
-          {React.createElement(Icon.menu, { size: 20 })}
+        <button className={`jz-tool ${canRedo ? '' : 'is-disabled'}`} title="Redo (Ctrl+Shift+Z)" aria-label="Redo" onClick={() => void actions.wbRedo()} disabled={!canRedo}>
+          {React.createElement(Icon.redo, { size: 19 })}
         </button>
       </div>
 
-      {flyout === 'ink' ? (
-        <div className="jz-flyout jz-flyout--ink">
+      <div className="jz-toolbar__group">
+        <button
+          className={`jz-tool ${popover === 'more' ? 'is-open' : ''}`}
+          title="More"
+          aria-label="More"
+          onClick={() => setPopover(popover === 'more' ? 'none' : 'more')}
+        >
+          {React.createElement(Icon.menu, { size: 19 })}
+        </button>
+      </div>
+
+      {popover === 'ink' ? (
+        <PopoverShell title="Ink" onClose={() => setPopover('none')}>
           <div className="jz-flyout__row">
             {SWATCHES.map((c) => (
               <button
                 key={c}
                 className={`jz-swatch-btn ${style.color.toLowerCase() === c.toLowerCase() ? 'is-active' : ''}`}
                 style={{ background: c }}
+                title={c}
                 onClick={() => actions.setWbStyle({ color: c })}
               />
             ))}
@@ -281,27 +342,24 @@ const BoardTools: React.FC = () => {
               </button>
             ))}
           </div>
-        </div>
+        </PopoverShell>
       ) : null}
 
-      {flyout === 'more' ? (
-        <div className="jz-flyout jz-flyout--more">
+      {popover === 'more' ? (
+        <PopoverShell title="More" onClose={() => setPopover('none')}>
           <button onClick={() => boardId && void actions.wbInsertImage(boardId)}>
-            <Icon.image size={16} /> Insert image
+            <Icon.image size={15} /> Insert image
           </button>
           <button onClick={() => boardId && void actions.wbExport(boardId, 'all')}>
-            <Icon.expand size={16} /> Export PNG
-          </button>
-          <button onClick={() => boardId && void actions.wbExport(boardId, 'view')}>
-            <Icon.image size={16} /> Export current view
+            <Icon.expand size={15} /> Export PNG
           </button>
           <button onClick={() => boardId && void actions.presentBoard(boardId)}>
-            <Icon.broadcast size={16} /> Present this board (Ctrl+Enter)
+            <Icon.broadcast size={15} /> Present this board
           </button>
           <button className="is-danger" onClick={() => boardId && void actions.wbClear(boardId)}>
-            <Icon.trash size={16} /> Clear board
+            <Icon.trash size={15} /> Clear board
           </button>
-        </div>
+        </PopoverShell>
       ) : null}
     </>
   );

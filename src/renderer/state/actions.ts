@@ -92,7 +92,7 @@ export const actions = {
       return;
     }
     const ok = await window.juzt.tabs.navigate(tab.id, input);
-    if (!ok) actions.toast('That address cannot be opened safely', 'error');
+    if (!ok) actions.toast('Type a web address or a few words to search', 'error');
   },
   /** Palette navigation is audience-aware while a page is presented (dual mode). */
   /** Palette alias (kept for component compatibility). */
@@ -112,7 +112,7 @@ export const actions = {
     const presenting = state.live?.presentation.kind === 'web';
     if (dual && presenting) {
       const ok = await window.juzt.present.navigateAudience(input);
-      if (!ok) actions.toast('That address cannot be opened safely', 'error');
+      if (!ok) actions.toast('That address could not be opened on the audience output', 'error');
       return;
     }
     await actions.navigateActive(input);
@@ -172,6 +172,14 @@ export const actions = {
   },
   async openLiveWindow(): Promise<void> {
     await window.juzt.present.openWindow();
+  },
+  /**
+   * "Start Presentation" — the explicit switch from the calm single window into
+   * the dual (Juzt Prep + Juzt Live) composition. Nothing else in the app turns
+   * the second window on, so the two surfaces can never be stacked by accident.
+   */
+  async startPresentation(): Promise<void> {
+    store.set({ live: await window.juzt.present.start() });
   },
   async setPreview(enabled: boolean): Promise<void> {
     store.set({ previewEnabled: enabled });
@@ -497,6 +505,100 @@ export const actions = {
   setSettingsOpen(open: boolean, tab?: SettingsTab): void {
     store.set({ settingsOpen: open, ...(tab ? { settingsTab: tab } : {}) });
   },
+  /* ------------------------------------------------------------------ *
+   * Website compatibility + extensions (PREP only)
+   * ------------------------------------------------------------------ */
+
+  /** Pull the private engine report. Never called from LIVE. */
+  async refreshCompat(): Promise<void> {
+    const info = await window.juzt.compat.info();
+    store.set({ compatInfo: info });
+  },
+  async refreshExtensions(): Promise<void> {
+    store.set({ extensions: await window.juzt.extensions.list() });
+  },
+  async setWebUserAgent(mode: 'clean' | 'app' | 'electron'): Promise<void> {
+    store.set({ settings: await window.juzt.setSettings({ webUserAgent: mode }) });
+    await actions.refreshCompat();
+  },
+  async setSiteCompat(origin: string, mode: 'clean' | 'app' | 'electron'): Promise<void> {
+    if (!(await window.juzt.compat.setSite(origin, mode))) return;
+    await actions.setSettings({});
+    await actions.refreshCompat();
+  },
+  async resetSiteCompat(origin: string): Promise<void> {
+    await window.juzt.compat.resetSite(origin);
+    await actions.setSettings({});
+    await actions.refreshCompat();
+    actions.toast(`Reset compatibility settings for ${origin}`);
+  },
+  async clearSiteData(origin: string): Promise<{ ok: boolean; error?: string }> {
+    return window.juzt.compat.clearSiteData(origin);
+  },
+  async setSafeMode(on: boolean): Promise<void> {
+    await window.juzt.extensions.setSafeMode(on);
+    await actions.setSettings({});
+    await actions.refreshCompat();
+  },
+  async setExtensionDevMode(on: boolean): Promise<void> {
+    await actions.setSettings({ extensionDevMode: on });
+  },
+  async pickExtension(): Promise<void> {
+    const result = await window.juzt.extensions.pick();
+    if (result && 'error' in result) {
+      if (result.error !== 'cancelled') actions.toast(result.error, 'error');
+      return;
+    }
+    await actions.refreshExtensions();
+    await actions.refreshCompat();
+    if (result && 'name' in result) actions.toast(`Loaded ${result.name}`);
+  },
+  async addExtension(dir: string): Promise<void> {
+    const result = await window.juzt.extensions.add(dir);
+    if ('error' in result) {
+      actions.toast(result.error, 'error');
+      return;
+    }
+    await actions.refreshExtensions();
+    await actions.refreshCompat();
+    actions.toast(`Loaded ${result.name}`);
+  },
+  async enableExtension(id: string): Promise<void> {
+    await window.juzt.extensions.enable(id);
+    await actions.refreshExtensions();
+    await actions.refreshCompat();
+  },
+  async disableExtension(id: string): Promise<void> {
+    await window.juzt.extensions.disable(id);
+    await actions.refreshExtensions();
+    await actions.refreshCompat();
+  },
+  async reloadExtension(id: string): Promise<void> {
+    await window.juzt.extensions.reload(id);
+    await actions.refreshExtensions();
+    actions.toast('Extension reloaded');
+  },
+  async removeExtension(id: string): Promise<void> {
+    await window.juzt.extensions.remove(id);
+    await actions.refreshExtensions();
+    await actions.refreshCompat();
+  },
+  /** Pause every loaded extension without losing the approved list. */
+  async disableAllExtensions(): Promise<void> {
+    await window.juzt.extensions.disableAll();
+    await actions.refreshExtensions();
+    await actions.refreshCompat();
+    actions.toast('All extensions paused. Your list is kept.');
+  },
+  toggleExtensionsMenu(): void {
+    const open = !store.getState().extensionsOpen;
+    store.set({ extensionsOpen: open });
+    if (open) void actions.refreshExtensions();
+  },
+  closeExtensionsMenu(): void {
+    store.set({ extensionsOpen: false });
+  },
+
   finishOnboarding(): void {
     store.set({ onboardOpen: false });
     void actions.setSettings({ firstRunDone: true });
@@ -665,6 +767,12 @@ export const actions = {
         break;
       case 'settings':
         actions.openSettings();
+        break;
+      case 'safe mode':
+        await actions.setSafeMode(arg ? arg === 'on' : !s.settings.safeMode);
+        break;
+      case 'extensions':
+        actions.openSettings('extensions');
         break;
       case 'diagnostics':
         actions.toggleDiagnostics();

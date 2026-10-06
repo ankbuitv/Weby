@@ -42,6 +42,8 @@ export const COMMANDS: CommandSpec[] = [
   { name: 'notes', hint: 'Open notes and timer' },
   { name: 'camera', hint: 'Teacher camera settings' },
   { name: 'settings', hint: 'Open settings' },
+  { name: 'safe mode', hint: 'Website tabs without extensions and default compatibility', arg: { free: true, placeholder: 'on|off' } },
+  { name: 'extensions', hint: 'Manage extensions' },
   { name: 'diagnostics', hint: 'Developer diagnostics overlay' },
   { name: 'about', hint: 'About Juzt' },
   { name: 'quit', hint: 'Quit Juzt' },

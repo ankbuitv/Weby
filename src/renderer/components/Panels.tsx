@@ -17,6 +17,7 @@ import { store, useSel, type SettingsTab } from '../state/store';
 import { listCameras } from '../live/effects';
 import { Icon } from './Icons';
 import { Logo } from './Logo';
+import { BrowserPanel, ExtensionsPanel, ExtensionsMenu } from './BrowserPanels';
 
 /* ------------------------------------------------------------------ *
  * Settings
@@ -29,12 +30,20 @@ const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
   { id: 'tabs', label: 'Tabs' },
   { id: 'camera', label: 'Camera' },
   { id: 'permissions', label: 'Permissions' },
+  { id: 'browser', label: 'Browser' },
+  { id: 'extensions', label: 'Extensions' },
   { id: 'about', label: 'About' },
 ];
 
 export const SettingsPanel: React.FC = () => {
   const open = useSel((s) => s.settingsOpen);
   const tab = useSel((s) => s.settingsTab);
+  const showBrowser = tab === 'browser' || tab === 'extensions';
+  React.useEffect(() => {
+    if (!open) return;
+    void actions.refreshCompat();
+    if (showBrowser) void actions.refreshExtensions();
+  }, [open, showBrowser]);
   if (!open) return null;
 
   return (
@@ -58,6 +67,8 @@ export const SettingsPanel: React.FC = () => {
           {tab === 'tabs' ? <TabSettings /> : null}
           {tab === 'camera' ? <CameraPanel /> : null}
           {tab === 'permissions' ? <PermissionInfo /> : null}
+          {tab === 'browser' ? <BrowserPanel /> : null}
+          {tab === 'extensions' ? <ExtensionsPanel /> : null}
           {tab === 'about' ? <AboutPanel /> : null}
         </div>
       </div>
@@ -889,40 +900,43 @@ export const InternalPage: React.FC<{ url: string }> = ({ url }) => {
   return <NewTabPage />;
 };
 
+/**
+ * The New Tab surface.
+ *
+ * V2 rule: this is the *only* thing the card shows when no website is open —
+ * brand, one address field, and a couple of small rows of pinned/recent sites
+ * below. No whiteboard list, no scenes, no status text, no dashboard.
+ */
 const NewTabPage: React.FC = () => {
   const favorites = useSel((s) => s.favorites);
   const history = useSel((s) => s.history);
-  const boards = useSel((s) => s.boards);
-  const scenes = useSel((s) => s.scenes);
   const appName = useSel((s) => s.appName);
   const [value, setValue] = React.useState('');
-  const pinned = favorites.slice(0, 8);
-  const recent = history.slice(0, 6);
+  const pinned = favorites.slice(0, 6);
+  const recent = history.slice(0, 5);
 
   return (
-    <div className="jz-internal">
-      <div className="jz-internal__hero">
-        <Logo size={54} />
-        <h1>{appName}</h1>
-        <form
-          className="jz-internal__search"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (value.trim()) void actions.navigateActive(value.trim());
-          }}
-        >
-          <Icon.search size={18} />
-          <input value={value} placeholder="Search or enter address" onChange={(e) => setValue(e.target.value)} autoFocus />
-        </form>
-      </div>
+    <div className="jz-newtab">
+      <Logo size={54} />
+      <h1>{appName}</h1>
+      <form
+        className="jz-newtab__field"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (value.trim()) void actions.navigateActive(value.trim());
+        }}
+      >
+        <Icon.search size={17} />
+        <input value={value} placeholder="Search or enter address" onChange={(e) => setValue(e.target.value)} autoFocus spellCheck={false} />
+      </form>
 
       {pinned.length ? (
-        <section className="jz-internal__section">
+        <section className="jz-newtab__row">
           <h3>Pinned</h3>
-          <div className="jz-site-grid">
+          <div className="jz-newtab__chips">
             {pinned.map((f) => (
-              <button key={f.id} className="jz-site-card" onClick={() => void actions.navigateActive(f.url)} title={f.url}>
-                {f.favicon ? <img src={f.favicon} alt="" /> : <Icon.globe size={18} />}
+              <button key={f.id} className="jz-chip-link" onClick={() => void actions.navigateActive(f.url)} title={f.url}>
+                {f.favicon ? <img src={f.favicon} alt="" width={14} height={14} /> : <Icon.globe size={14} />}
                 <span>{f.title || hostOf(f.url)}</span>
               </button>
             ))}
@@ -931,44 +945,18 @@ const NewTabPage: React.FC = () => {
       ) : null}
 
       {recent.length ? (
-        <section className="jz-internal__section">
+        <section className="jz-newtab__row">
           <h3>Recent</h3>
-          <div className="jz-site-grid">
+          <div className="jz-newtab__chips">
             {recent.map((h) => (
-              <button key={h.id} className="jz-site-card" onClick={() => void actions.navigateActive(h.url)} title={h.url}>
-                <Icon.clock size={18} />
+              <button key={h.id} className="jz-chip-link" onClick={() => void actions.navigateActive(h.url)} title={h.url}>
+                <Icon.clock size={14} />
                 <span>{h.title || hostOf(h.url)}</span>
               </button>
             ))}
           </div>
         </section>
       ) : null}
-
-      <div className="jz-internal__cols">
-        {boards.length ? (
-          <section className="jz-internal__section">
-            <h3>Whiteboards</h3>
-            {boards.slice(0, 6).map((b) => (
-              <button key={b.id} className="jz-internal__line" onClick={() => void actions.openBoard(b.id)}>
-                <Icon.board size={16} />
-                <span>{b.name}</span>
-                <em>{new Date(b.updatedAt).toLocaleDateString()}</em>
-              </button>
-            ))}
-          </section>
-        ) : null}
-        {scenes.length ? (
-          <section className="jz-internal__section">
-            <h3>Scenes</h3>
-            {scenes.slice(0, 6).map((s2) => (
-              <button key={s2.id} className="jz-internal__line" onClick={() => void actions.applyScene(s2.id)}>
-                <Icon.layers size={16} />
-                <span>{s2.name}</span>
-              </button>
-            ))}
-          </section>
-        ) : null}
-      </div>
     </div>
   );
 };

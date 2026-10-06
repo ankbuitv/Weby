@@ -23,6 +23,8 @@ export interface TabEvents {
   onVisited(entry: { url: string; title: string }): void;
   onViewsChanged(): void;
   onToast(message: string, tone?: 'info' | 'error'): void;
+  /** A whiteboard tab needs its document materialised before anything is drawn. */
+  onBoardNeeded(boardId: string, name: string): void;
 }
 
 const DISCARD_AFTER_MS = 10 * 60 * 1000;
@@ -88,11 +90,16 @@ export class TabManager {
     const id = `tab_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
     let tab: TabState;
     if (opts.kind === 'whiteboard') {
+      const boardId = opts.boardId ?? `board_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 5)}`;
+      const name = opts.name ?? 'Whiteboard';
+      // A whiteboard is a *tab type*: the document must exist before the editor
+      // mounts, or the first stroke is written to a board nobody owns.
+      this.events.onBoardNeeded(boardId, name);
       tab = {
         id,
         kind: 'whiteboard',
-        boardId: opts.boardId ?? `board_${Date.now().toString(36)}`,
-        name: opts.name ?? 'Whiteboard',
+        boardId,
+        name,
         pinned: opts.pinned ?? false,
       };
     } else {
@@ -250,10 +257,21 @@ export class TabManager {
 
   navigate(id: string, input: string): boolean {
     const tab = this.get(id);
-    if (!tab || tab.kind !== 'web') return false;
+    // A typed address always opens *somewhere*: if the current tab is a
+    // whiteboard, open a web tab rather than refusing the keystroke.
+    if (!tab || tab.kind !== 'web') {
+      const target = isInternalPage(input) ? input : resolveInput(input, { search: true });
+      if (!target) {
+        this.events.onToast('Type a web address or a few words to search', 'error');
+        return false;
+      }
+      if (!isInternalPage(target)) this.create({ url: target, activate: true });
+      else this.create({ url: target, activate: true });
+      return true;
+    }
     const url = isInternalPage(input) ? input : resolveInput(input, { search: true });
     if (!url) {
-      this.events.onToast('That address cannot be opened safely', 'error');
+      this.events.onToast('Type a web address or a few words to search', 'error');
       return false;
     }
     if (isInternalPage(url)) {

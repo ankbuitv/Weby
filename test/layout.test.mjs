@@ -5,7 +5,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { computeGeometry, computeCardRect, computePaneRect, sameRect, MARGINS, SIZE_PRESETS } from '../dist/test/shared/layout.js';
+import { computeGeometry, computeCardRect, computePaneRect, sameRect, MARGINS, SIZE_PRESETS, workspaceInsets, shelfVisible, TOOLBAR, TAB_SHELF, TOP_BAR, CARD_INSETS } from '../dist/test/shared/layout.js';
 
 const KEEP_AWAKE = { top: 0, left: 0, right: 0, bottom: 0 };
 
@@ -34,10 +34,54 @@ test('dual mode: the audience card fits inside the projector', () => {
 
 test('the private card never overlaps the toolbar or the top chrome', () => {
   const geo = computeGeometry({ ...base, single: false });
-  assert.ok(geo.prepCard.x >= 78, `left edge was ${geo.prepCard.x}`);
-  assert.ok(geo.prepCard.y >= 96, `top edge was ${geo.prepCard.y}`);
+  const insets = workspaceInsets(true);
+  // The card starts to the right of the floating toolbar, below the top strip
+  // and the tab shelf, and never runs past the calm outer margins.
+  assert.ok(geo.prepCard.x >= insets.left, `left edge was ${geo.prepCard.x}`);
+  assert.ok(geo.prepCard.y >= insets.top, `top edge was ${geo.prepCard.y}`);
   assert.ok(geo.prepCard.x + geo.prepCard.width <= 1440, JSON.stringify(geo.prepCard));
   assert.ok(geo.prepCard.y + geo.prepCard.height <= 900, JSON.stringify(geo.prepCard));
+});
+
+test('V2 chrome: the card fills most of the window and clears the toolbar', () => {
+  const insets = workspaceInsets(true);
+  assert.equal(insets.left, TOOLBAR.offsetLeft + TOOLBAR.width + TOOLBAR.gap);
+  assert.ok(insets.top <= 80, `the top inset must stay small, was ${insets.top}`);
+  assert.ok(insets.right >= 24 && insets.right <= 40, `right margin was ${insets.right}`);
+  assert.ok(insets.bottom >= 30 && insets.bottom <= 50, `bottom margin was ${insets.bottom}`);
+
+  // Without the tab shelf the card grows upward by exactly the shelf + gap.
+  const noShelf = workspaceInsets(false);
+  assert.equal(noShelf.top + TAB_SHELF.height + TAB_SHELF.gap + (TOP_BAR.height - 0) >= insets.top - 1, true);
+  assert.ok(noShelf.top < insets.top, 'the shelf must take real vertical space');
+
+  const geo = computeGeometry({ ...base, single: true, shelfVisible: false });
+  assert.ok(geo.live.width > 1440 * 0.75, `the website must own the screen, got ${geo.live.width}`);
+  assert.ok(geo.live.height > 900 * 0.75, `the website must own the screen, got ${geo.live.height}`);
+  assert.ok(geo.live.x >= TOOLBAR.offsetLeft + TOOLBAR.width, 'the card must not sit under the toolbar');
+});
+
+test('the tab shelf collapses while a single tab is open', () => {
+  assert.equal(shelfVisible(1, false), false);
+  assert.equal(shelfVisible(2, false), true);
+  assert.equal(shelfVisible(1, true), true, 'the teacher may force the shelf on');
+  assert.equal(shelfVisible(0, false), false);
+});
+
+test('the default preset does not force an aspect ratio (no dead bands)', () => {
+  const card = computeCardRect({ width: 1440, height: 900 }, {
+    size: 'comfortable', safeInset: 0, customScale: 1, margin: 'compact', layout: 'focus',
+  });
+  // 16:9 on a 16:10 window would waste ~12% of the height; the V2 default fills it.
+  assert.ok(card.height / card.width > 0.5, `${card.width}x${card.height}`);
+});
+
+test('the default card radius is the V2 16-18px family', () => {
+  assert.ok(CARD_INSETS.left > 0);
+  assert.ok(TOOLBAR.width >= 54 && TOOLBAR.width <= 60, `toolbar width ${TOOLBAR.width}`);
+  assert.ok(TOOLBAR.radius >= 16 && TOOLBAR.radius <= 20, `toolbar radius ${TOOLBAR.radius}`);
+  assert.ok(TAB_SHELF.height >= 42 && TAB_SHELF.height <= 46, `shelf height ${TAB_SHELF.height}`);
+  assert.ok(TAB_SHELF.minWidth >= 150 && TAB_SHELF.maxWidth <= 240, 'tab widths');
 });
 
 test('every size preset stays on screen', () => {

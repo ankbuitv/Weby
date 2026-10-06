@@ -2,7 +2,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import type { CameraConfig, LivePayload, PrivacyMask, SpotlightState, ToolId } from '../../shared/types';
 import { AnnotationLayer, type AnnotationLayerHandle } from '../annotation/AnnotationLayer';
-import { CameraView } from './effects';
+import { BackgroundLayer, CameraView, PrivacyScreen } from './effects';
 import type { InkItem, InkOp } from './ink';
 
 /**
@@ -74,20 +74,27 @@ const OverlayApp: React.FC = () => {
   const masks: PrivacyMask[] = live?.masks ?? [];
   const spotlight: SpotlightState = live?.spotlight ?? { on: false, x: 0.5, y: 0.5, r: 0.24, dim: 0.6, shape: 'circle' };
   const camera = live?.camera;
+  const privacy = !!live?.flags.privacy;
+  const frozen = !!live?.flags.frozen;
 
   return (
     <div className="jz-overlay-root">
-      {(live?.flags.frozen || live?.flags.protecting) && frame ? (
-        <img className="jz-overlay-frame" src={frame.dataUrl} alt="" draggable={false} />
+      {frozen && frame ? <img className="jz-overlay-frame" src={frame.dataUrl} alt="" draggable={false} /> : null}
+
+      {privacy ? (
+        <div className="jz-overlay-privacy" aria-hidden={false}>
+          <BackgroundLayer spec={live?.surface.privacyBackground ?? { kind: 'gradient', gradient: 'linear-gradient(160deg,#0a2a3a,#04101a)' }} size={{ w: surface.width, h: surface.height }} />
+          {live ? <PrivacyScreen live={live} size={{ w: surface.width, h: surface.height }} /> : null}
+        </div>
       ) : null}
 
       <AnnotationLayer
         rect={surface}
         size={{ w: surface.width, h: surface.height }}
-        tool={tool.tool}
+        tool={privacy || frozen ? 'cursor' : tool.tool}
         style={tool.style}
         numberStart={tool.number}
-        interactive={tool.tool !== 'cursor'}
+        interactive={!privacy && !frozen && tool.tool !== 'cursor'}
         cameraInteractive={tool.cameraDrag}
         masks={masks}
         spotlight={spotlight}
@@ -100,7 +107,7 @@ const OverlayApp: React.FC = () => {
         onLiveStroke={(item: InkItem | null) => void window.juzt.effects.ink({ kind: 'live', item })}
         onLaser={(points, color) => void window.juzt.effects.laser(points, color)}
         camera={
-          camera && camera.enabled && (camera.exposure === 'prep' || camera.exposure === 'both') ? (
+          camera && camera.enabled && (camera.exposure === 'prep' || camera.exposure === 'both') && !privacy ? (
             <CameraView
               camera={camera}
               card={{ x: 0, y: 0, width: surface.width, height: surface.height }}
