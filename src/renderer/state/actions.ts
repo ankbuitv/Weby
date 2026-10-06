@@ -578,6 +578,10 @@ export const actions = {
     await actions.refreshExtensions();
     actions.toast('Extension reloaded');
   },
+  async openExtensionOptions(id: string): Promise<void> {
+    const result = await window.juzt.extensions.openOptions(id);
+    if (!result.ok) actions.toast(result.error ?? 'No options page.', 'error');
+  },
   async removeExtension(id: string): Promise<void> {
     await window.juzt.extensions.remove(id);
     await actions.refreshExtensions();

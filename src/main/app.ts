@@ -281,24 +281,52 @@ export class JuztApp {
    * JavaScript into pages: no monkey-patching of `navigator`, no fragile global
    * shims, and no way for the two values to contradict each other. The
    * advertised Chrome/Chromium version is always the version actually bundled.
+   *
+   * Exactly ONE handler is registered for the lifetime of the session. It picks
+   * the mode per request from the live settings, so changing the identity or a
+   * per-site override costs nothing and leaks no listener.
    */
-  private applyWebIdentity(s: Session, origin?: string): void {
+  private applyWebIdentity(s: Session): void {
     const versions = process.versions;
-    const mode: UserAgentMode = (origin ? this.settings.siteCompat[origin] : undefined) ?? this.settings.webUserAgent;
-    const ua = buildWebUserAgent({
+    const base = {
       chromium: versions.chrome,
       electron: versions.electron,
       app: APP_NAME,
       version: app.getVersion(),
       platform: process.platform,
       arch: process.arch,
-      mode,
-    });
-    s.setUserAgent(ua, `https://${origin ?? 'example.invalid'}/`);
+    };
 
-    const hints = clientHints(versions.chrome, process.platform, mode);
-    const filter = origin ? { urls: [`https://${origin}/*`, `http://${origin}/*`] } : { urls: ['https://*/*', 'http://*/*'] };
-    s.webRequest.onBeforeSendHeaders(filter, (details, callback) => {
+    // One UA/hint pair per mode, built once: the request path stays allocation
+    // free apart from the header object itself.
+    const cache = new Map<UserAgentMode, { ua: string; hints: Record<string, string> }>();
+    const forMode = (mode: UserAgentMode) => {
+      let entry = cache.get(mode);
+      if (!entry) {
+        entry = { ua: buildWebUserAgent({ ...base, mode }), hints: clientHints(base.chromium, base.platform, mode) };
+        cache.set(mode, entry);
+      }
+      return entry;
+    };
+
+    const modeFor = (url: string): UserAgentMode => {
+      if (this.settings.safeMode) return 'clean';
+      try {
+        const origin = `${new URL(url).protocol}//${new URL(url).host}`;
+        const override = this.settings.siteCompat[origin];
+        if (override) return override;
+      } catch {
+        /* not a parseable URL — fall through to the global setting */
+      }
+      return this.settings.webUserAgent;
+    };
+
+    // The session default covers anything the filter does not match.
+    const global = forMode(this.settings.safeMode ? 'clean' : this.settings.webUserAgent);
+    s.setUserAgent(global.ua);
+
+    s.webRequest.onBeforeSendHeaders({ urls: ['https://*/*', 'http://*/*'] }, (details, callback) => {
+      const { ua, hints } = forMode(modeFor(details.url));
       const headers: Record<string, string> = { ...details.requestHeaders };
       for (const [key, value] of Object.entries(hints)) headers[key] = value;
       // Never leak a stale application token from the default headers.
@@ -308,11 +336,28 @@ export class JuztApp {
     });
   }
 
-  /** Re-apply the identity globally and for every origin that has an override. */
+  /**
+   * Re-apply the identity after a settings change.
+   *
+   * Only the session default and the settings are refreshed — the request
+   * handler reads them live, so there is nothing to re-register.
+   */
   private refreshWebIdentity(): void {
     if (!this.appSession) return;
-    this.applyWebIdentity(this.appSession);
-    for (const origin of Object.keys(this.settings.siteCompat)) this.applyWebIdentity(this.appSession, origin);
+    const ua = this.appSession.getUserAgent();
+    const mode = this.settings.safeMode ? 'clean' : this.settings.webUserAgent;
+    this.appSession.setUserAgent(
+      buildWebUserAgent({
+        chromium: process.versions.chrome,
+        electron: process.versions.electron,
+        app: APP_NAME,
+        version: app.getVersion(),
+        platform: process.platform,
+        arch: process.arch,
+        mode,
+      }),
+    );
+    void ua;
   }
 
   /**
@@ -1111,12 +1156,37 @@ export class JuztApp {
     });
     registerPrep(CH.EXT_OPEN_OPTIONS, (_e, id: unknown) => {
       const record = this.extensions?.list().find((r) => r.id === asString(id));
-      if (!record) return false;
-      // Options pages open in a small, ordinary Juzt window: they get no
-      // privileged preload and no access to Juzt IPC.
-      const win = new BrowserWindow({ width: 720, height: 560, title: `${record.name} options`, autoHideMenuBar: true });
-      win.webContents.loadURL('about:blank');
-      return true;
+      if (!record) return { ok: false, error: 'That extension is not in the list.' };
+      if (!this.appSession) return { ok: false, error: 'The website session is not ready.' };
+      // Find the options page the manifest declares. Electron has no
+      // "openExtensionOptions" API, so this is the supported route: load the
+      // extension's own page in an ordinary window that shares the extension
+      // session but carries NO Juzt preload, so it cannot reach privileged IPC.
+      const loaded = this.appSession.extensions.getAllExtensions().find((e) => e.id === record.id);
+      const manifest = loaded?.manifest as { options_page?: unknown; options_ui?: { page?: unknown } } | undefined;
+      const page =
+        typeof manifest?.options_page === 'string'
+          ? manifest.options_page
+          : typeof manifest?.options_ui?.page === 'string'
+            ? manifest.options_ui.page
+            : null;
+      if (!loaded || !page) return { ok: false, error: 'This extension does not declare an options page.' };
+      const win = new BrowserWindow({
+        width: 720,
+        height: 560,
+        title: `${record.name} options`,
+        autoHideMenuBar: true,
+        webPreferences: {
+          // Same session so the page can talk to its own extension, but a bare
+          // renderer: no preload, no context bridge, no Juzt API.
+          session: this.appSession,
+          contextIsolation: true,
+          nodeIntegration: false,
+          sandbox: true,
+        },
+      });
+      win.loadURL(`${loaded.url.replace(/\/$/, '')}/${page.replace(/^\.?\//, '')}`);
+      return { ok: true };
     });
     registerPrep(CH.SAFE_MODE_SET, (_e, on: unknown) => {
       const enabled = asBool(on);

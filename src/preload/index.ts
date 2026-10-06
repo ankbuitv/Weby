@@ -202,6 +202,7 @@ const prepApi = {
     remove: (id: string) => invoke<boolean>(CH.EXT_REMOVE, id),
     /** Loaded instances are dropped; the approved list is kept. */
     disableAll: () => invoke<unknown[]>(CH.EXT_DISABLE_ALL),
+    openOptions: (id: string) => invoke<{ ok: boolean; error?: string }>(CH.EXT_OPEN_OPTIONS, id),
     setSafeMode: (on: boolean) => invoke<boolean>(CH.SAFE_MODE_SET, on),
   },
 

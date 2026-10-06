@@ -320,6 +320,7 @@ export const ExtensionsPanel: React.FC = () => {
                 <button onClick={() => withBusy(ext.id, () => actions.reloadExtension(ext.id))} disabled={busyId === ext.id}>
                   Reload
                 </button>
+                <button onClick={() => void actions.openExtensionOptions(ext.id)}>Options</button>
                 <button onClick={() => void actions.removeExtension(ext.id)}>Remove</button>
               </div>
             </li>
