@@ -55,7 +55,11 @@ export class ExtensionManager {
 
   /** Extensions actually loaded by Chromium in this session. */
   loaded(): string[] {
-    return this.session.extensions.getAllExtensions().map((e) => e.id);
+    try {
+      return this.session.extensions.getAllExtensions().map((e) => e.id);
+    } catch {
+      return [];
+    }
   }
 
   /** Teacher asked to add an unpacked extension directory. */
@@ -86,6 +90,11 @@ export class ExtensionManager {
   /** Load one record into the session. Never throws. */
   private async load(record: ExtensionRecord): Promise<ExtensionRecord> {
     try {
+      if (typeof this.session.extensions?.loadExtension !== 'function') {
+        record.status = 'failed';
+        record.error = 'This Chromium build does not expose the extensions API.';
+        return record;
+      }
       const ext = await this.session.extensions.loadExtension(record.path, { allowFileAccess: false });
       record.id = ext.id;
       record.status = 'loaded';

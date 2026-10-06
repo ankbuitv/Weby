@@ -1045,9 +1045,14 @@ input[type='color'] {
 }
 
 /* Extensions menu — PREP only, anchored under the top strip. */
+/* Anchored to the puzzle button itself, so it never lands on another control. */
+.jz-top__extwrap {
+  position: relative;
+  display: inline-flex;
+}
 .jz-menu--ext {
-  top: 40px;
-  right: 148px;
+  top: 28px;
+  right: 0;
 }
 .jz-menu__head {
   padding: 6px 10px 4px;

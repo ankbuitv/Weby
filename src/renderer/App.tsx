@@ -234,17 +234,25 @@ const TopBar: React.FC<{ single: boolean }> = ({ single }) => {
         </button>
 
         {/* Extensions: PREP only. LIVE never renders a top bar at all. */}
-        <button
-          className={`jz-top__mini jz-top__ext${loadedCount > 0 ? ' has-ext' : ''}${safeMode ? ' is-off' : ''}`}
-          title={safeMode ? 'Extensions paused (Safe Mode)' : `${loadedCount} extension${loadedCount === 1 ? '' : 's'} running`}
-          onClick={() => actions.toggleExtensionsMenu()}
-        >
-          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
-            <path d="M6 1.6h4l.6 2.1 1.9 1.1 2.1-.6 2 3.4-1.6 1.4v2.2l1.6 1.4-2 3.4-2.1-.6-1.9 1.1L10 14.4H6l-.6-2.1-1.9-1.1-2.1.6-2-3.4L1 6.9V4.7L-.6 3.3l2-3.4 2.1.6L5.4 3.7 6 1.6Z" transform="translate(1)" stroke="currentColor" strokeWidth="1.1" />
-            <circle cx="8" cy="8" r="1.6" stroke="currentColor" strokeWidth="1.1" />
-          </svg>
-          {loadedCount > 0 ? <b>{loadedCount}</b> : null}
-        </button>
+        <span className="jz-top__extwrap">
+          <button
+            className={`jz-top__mini jz-top__ext${loadedCount > 0 ? ' has-ext' : ''}${safeMode ? ' is-off' : ''}`}
+            title={safeMode ? 'Extensions paused (Safe Mode)' : `${loadedCount} extension${loadedCount === 1 ? '' : 's'} running`}
+            onClick={() => actions.toggleExtensionsMenu()}
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+              <path
+                d="M6 1.6h4l.6 2.1 1.9 1.1 2.1-.6 2 3.4-1.6 1.4v2.2l1.6 1.4-2 3.4-2.1-.6-1.9 1.1L10 14.4H6l-.6-2.1-1.9-1.1-2.1.6-2-3.4L1 6.9V4.7L-.6 3.3l2-3.4 2.1.6L5.4 3.7 6 1.6Z"
+                transform="translate(1)"
+                stroke="currentColor"
+                strokeWidth="1.1"
+              />
+              <circle cx="8" cy="8" r="1.6" stroke="currentColor" strokeWidth="1.1" />
+            </svg>
+            {loadedCount > 0 ? <b>{loadedCount}</b> : null}
+          </button>
+          {extensionsOpen ? <ExtensionsMenu /> : null}
+        </span>
 
         <span className="jz-top__win">
           <button className="jz-win" title="Minimise" onClick={() => void window.juzt.window.minimize()}>
@@ -264,7 +272,6 @@ const TopBar: React.FC<{ single: boolean }> = ({ single }) => {
           </button>
         </span>
       </div>
-      {extensionsOpen ? <ExtensionsMenu /> : null}
     </header>
   );
 };

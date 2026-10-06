@@ -1,5 +1,5 @@
 import React from 'react';
-import { store, useSel } from '../state/store';
+import { useSel } from '../state/store';
 import { actions } from '../state/actions';
 import { hostOf } from '../../shared/url';
 import { ENGINE_FEATURES } from '../../shared/engine';
@@ -37,6 +37,7 @@ const MODE_LABEL: Record<UserAgentMode, { title: string; hint: string }> = {
 
 export const BrowserPanel: React.FC = () => {
   const info = useSel((s) => s.compatInfo);
+  const version = useSel((s) => s.version);
   const settings = useSel((s) => s.settings);
   const activeTab = useSel((s) => s.tabs.find((t) => t.id === s.activeTabId) ?? null);
   const [busy, setBusy] = React.useState(false);
@@ -77,7 +78,7 @@ export const BrowserPanel: React.FC = () => {
 
       <div className="jz-kv">
         <span>Juzt</span>
-        <b>{info ? `v${info.app === 'Juzt' ? '' : ''}${''}` : '—'}</b>
+        <b>{version ? `v${version}` : info?.app ?? '—'}</b>
       </div>
       <div className="jz-kv">
         <span>Electron</span>
@@ -355,6 +356,28 @@ const Row: React.FC<{ label: string; hint?: string; children: React.ReactNode }>
 export const ExtensionsMenu: React.FC = () => {
   const open = useSel((s) => s.extensionsOpen);
   const list = useSel((s) => s.extensions);
+  React.useEffect(() => {
+    if (!open) return;
+    const close = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      // Anything inside the menu, or the puzzle button that opened it, is fine.
+      if (target?.closest('.jz-menu--ext, .jz-top__ext')) return;
+      actions.closeExtensionsMenu();
+    };
+    const esc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') actions.closeExtensionsMenu();
+    };
+    // Deferred so the click that opened the menu does not immediately close it.
+    const id = window.setTimeout(() => {
+      document.addEventListener('mousedown', close);
+      document.addEventListener('keydown', esc);
+    }, 0);
+    return () => {
+      window.clearTimeout(id);
+      document.removeEventListener('mousedown', close);
+      document.removeEventListener('keydown', esc);
+    };
+  }, [open]);
   if (!open) return null;
   const loaded = list.filter((e) => e.status === 'loaded');
 
@@ -380,6 +403,3 @@ export const ExtensionsMenu: React.FC = () => {
     </div>
   );
 };
-
-/** Keeps the store selector type honest without importing Settings here. */
-void store;

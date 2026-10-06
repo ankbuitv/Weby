@@ -45,7 +45,8 @@ export function platformToken(platform: NodeJS.Platform, arch: string): string {
     case 'win32':
       return `Windows NT 10.0${bits}`;
     case 'darwin':
-      return arch === 'arm64' ? 'Macintosh; Intel Mac OS X 10_15_7' : 'Macintosh; Intel Mac OS X 10_15_7';
+      // Chrome reports the same platform token on Intel and Apple silicon.
+      return 'Macintosh; Intel Mac OS X 10_15_7';
     default:
       return arch === 'arm64' ? 'X11; Linux aarch64' : 'X11; Linux x86_64';
   }
@@ -118,11 +119,6 @@ export function sanitizeUserAgent(ua: string): string {
   // Any `Name/version` token that is not part of Chrome/Safari/AppleWebKit.
   out = out.replace(/\s+(?!Chrome\/|Safari\/|AppleWebKit\/|Mobile\/)[A-Za-z][\w.-]*\/[\d.]+/g, '');
   return out.trim();
-}
-
-/** A short human summary for the private About panel. */
-export function describeEngine(info: EngineInfo): string {
-  return `${info.app} ${info.app === 'Juzt' ? '' : ''}on Electron ${info.electron} · Chromium ${info.chromium} · V8 ${info.v8} · Node ${info.node}`;
 }
 
 /**
